@@ -1,10 +1,10 @@
 /*
  * script.js
  *
- * Versión lista para pegar.
  * Fuente principal: Google Sheets (API gviz). Fallback: OBD.xlsx local.
  * Filtros: Acopio (Nombre 1), Lote (texto en mayúsculas), Tipo de material y Fecha.
  * Mejora: botón 📋 junto a cada “Referencia” para copiarla al portapapeles.
+ * Rendimiento/UI: debounce en filtros, normalización previa y render por lotes.
  */
 
 // -------------------- Configuración --------------------
@@ -73,8 +73,24 @@ function formatDateDisplay(val) {
   return `${d}/${m}/${y}`;
 }
 
-// Alias si en algún sitio llamabas a formatDateISO
-function formatDateISO(val) { return toISODate(val); }
+// Debounce para no recalcular en cada tecla
+function debounce(fn, wait = 150) {
+  let t; 
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
+}
+
+// Enriquecer dataset una sola vez (para filtros rápidos)
+function prepareDataset() {
+  dataset = dataset.map(row => {
+    const fechaISO = toISODate(row['Fe.contabilización']);
+    const loteRaw  = row['Lote'] ?? '';
+    return {
+      ...row,
+      __fechaISO: fechaISO,                    // comparación directa contra input date
+      __loteUC: String(loteRaw).toUpperCase()  // búsqueda por lote en mayúsculas
+    };
+  });
+}
 
 // -------------------- Carga de datos --------------------
 async function loadDataset() {
@@ -103,12 +119,7 @@ async function loadDataset() {
         return obj;
       });
 
-      // Normalizar fechas a ISO (YYYY-MM-DD)
-      dataset = dataset.map(row => ({
-        ...row,
-        ['Fe.contabilización']: toISODate(row['Fe.contabilización'])
-      }));
-
+      prepareDataset();
       initPage();
       return;
     } catch (err) {
@@ -125,11 +136,7 @@ async function loadDataset() {
     const sh  = wb.SheetNames[0];
     dataset   = XLSX.utils.sheet_to_json(wb.Sheets[sh], { defval: '' });
 
-    dataset = dataset.map(row => ({
-      ...row,
-      ['Fe.contabilización']: toISODate(row['Fe.contabilización'])
-    }));
-
+    prepareDataset();
     initPage();
   } catch (err) {
     console.error('Error al cargar el Excel local:', err);
@@ -148,13 +155,15 @@ function initPage() {
     const loteInput      = document.getElementById('filter-lote');
     const clearBtn       = document.getElementById('clear-filters');
 
-    if (nombreSelect)   nombreSelect.addEventListener('change', applyFilters);
-    if (fechaInput)     fechaInput.addEventListener('change', applyFilters);
-    if (materialSelect) materialSelect.addEventListener('change', applyFilters);
+    const debouncedApply = debounce(applyFilters, 150);
+
+    if (nombreSelect)   nombreSelect.addEventListener('change', debouncedApply);
+    if (fechaInput)     fechaInput.addEventListener('change', debouncedApply);
+    if (materialSelect) materialSelect.addEventListener('change', debouncedApply);
     if (loteInput) {
       loteInput.addEventListener('input', function () {
         this.value = this.value.toUpperCase();
-        applyFilters();
+        debouncedApply();
       });
     }
     if (clearBtn) {
@@ -228,32 +237,79 @@ function populateFilters() {
   });
 }
 
-// -------------------- Renderizado --------------------
+// -------------------- Renderizado (por lotes) --------------------
+// -------------------- Renderizado (por lotes + data-label para móvil) --------------------
 function renderTable(data) {
   const tbody = document.getElementById('table-body');
   if (!tbody) return;
 
   tbody.innerHTML = '';
-  data.forEach(row => {
-    const referencia = row['Referencia'] ?? '';
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${row['Centro'] ?? ''}</td>
-      <td>${row['Nombre 1'] ?? ''}</td>
-      <td>${formatDateDisplay(row['Fe.contabilización'])}</td>
-      <td>${row['Lote'] ?? ''}</td>
-      <td>
-        ${escapeHtml(referencia)}
-        ${referencia ? ` <button class="copy-ref" data-ref="${escapeHtml(referencia)}" title="Copiar referencia">📋</button>` : ''}
-      </td>
-      <td>${row['Cantidad'] ?? ''}</td>
-      <td>${row['Texto breve de material'] ?? ''}</td>
-    `;
-    tbody.appendChild(tr);
-  });
 
+  const LABELS = {
+    'Centro': 'Centro',
+    'Nombre 1': 'Nombre 1',
+    'Fe.contabilización': 'Fe.contabilización',
+    'Lote': 'Lote',
+    'Referencia': 'Referencia',
+    'Cantidad': 'Cantidad',
+    'Texto breve de material': 'Texto breve de material'
+  };
+
+  const BATCH = 200; // pinta de 200 en 200 para no bloquear la UI
+  let i = 0;
+
+  function makeTd(label, text) {
+    const td = document.createElement('td');
+    td.setAttribute('data-label', label);
+    td.textContent = text ?? '';
+    return td;
+  }
+
+  function paintChunk() {
+    const frag = document.createDocumentFragment();
+    const end = Math.min(i + BATCH, data.length);
+
+    for (; i < end; i++) {
+      const row = data[i];
+      const tr = document.createElement('tr');
+
+      const tdCentro = makeTd(LABELS['Centro'], row['Centro']);
+      const tdNombre = makeTd(LABELS['Nombre 1'], row['Nombre 1']);
+      const tdFecha  = makeTd(LABELS['Fe.contabilización'], formatDateDisplay(row.__fechaISO || row['Fe.contabilización']));
+      const tdLote   = makeTd(LABELS['Lote'], row['Lote']);
+
+      // Referencia + botón copiar
+      const tdRef = document.createElement('td');
+      tdRef.setAttribute('data-label', LABELS['Referencia']);
+      const refVal = row['Referencia'] ?? '';
+      const span   = document.createElement('span');
+      span.textContent = refVal;
+      tdRef.appendChild(span);
+      if (refVal) {
+        const btn = document.createElement('button');
+        btn.className = 'copy-ref';
+        btn.dataset.ref = refVal;
+        btn.title = 'Copiar referencia';
+        btn.textContent = '📋';
+        btn.style.marginLeft = '6px';
+        tdRef.appendChild(btn);
+      }
+
+      const tdCant = makeTd(LABELS['Cantidad'], row['Cantidad']);
+      const tdMat  = makeTd(LABELS['Texto breve de material'], row['Texto breve de material']);
+
+      tr.append(tdCentro, tdNombre, tdFecha, tdLote, tdRef, tdCant, tdMat);
+      frag.appendChild(tr);
+    }
+
+    tbody.appendChild(frag);
+    if (i < data.length) requestAnimationFrame(paintChunk);
+  }
+
+  requestAnimationFrame(paintChunk);
   updateRowCount(data.length);
 }
+
 
 // -------------------- Filtros --------------------
 function applyFilters() {
@@ -268,13 +324,13 @@ function applyFilters() {
     filtered = filtered.filter(r => (r['Nombre 1'] || '') === nombre);
   }
   if (loteQ) {
-    filtered = filtered.filter(r => String(r['Lote'] || '').toUpperCase().includes(loteQ));
+    filtered = filtered.filter(r => (r.__loteUC || '').includes(loteQ));
   }
   if (material) {
     filtered = filtered.filter(r => (r['Texto breve de material'] || '') === material);
   }
   if (fechaISO) {
-    filtered = filtered.filter(r => toISODate(r['Fe.contabilización']) === fechaISO);
+    filtered = filtered.filter(r => r.__fechaISO === fechaISO);
   }
 
   renderTable(filtered);
