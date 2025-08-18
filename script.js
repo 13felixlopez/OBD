@@ -342,5 +342,37 @@ function updateRowCount(count) {
   el.textContent = `Mostrando ${count} ${count === 1 ? 'registro' : 'registros'}.`;
 }
 
+/* --- Best-effort: bloquear menú contextual y atajos de inspección --- */
+(function hardenUI() {
+  // Deshabilitar clic derecho / menú contextual
+  const blockContext = (e) => e.preventDefault();
+  document.addEventListener('contextmenu', blockContext, { capture: true });
+
+  // Bloquear atajos comunes de DevTools y ver código fuente
+  const blockKeys = (e) => {
+    const k = (e.key || '').toLowerCase();
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const ctrlOrCmd = isMac ? e.metaKey : e.ctrlKey;
+
+    // F12
+    if (e.keyCode === 123) {
+      e.preventDefault(); e.stopPropagation(); return;
+    }
+    // Ctrl/Cmd + Shift + (I | J | C)
+    if (ctrlOrCmd && e.shiftKey && ['i','j','c'].includes(k)) {
+      e.preventDefault(); e.stopPropagation(); return;
+    }
+    // Ctrl/Cmd + U (ver código fuente)
+    if (ctrlOrCmd && k === 'u') {
+      e.preventDefault(); e.stopPropagation(); return;
+    }
+  };
+  document.addEventListener('keydown', blockKeys, { capture: true });
+
+  // Opcional: impedir arrastre de elementos (a veces abre menús)
+  document.addEventListener('dragstart', (e) => e.preventDefault(), { capture: true });
+})();
+
+
 // -------------------- Arranque --------------------
 document.addEventListener('DOMContentLoaded', loadDataset);
