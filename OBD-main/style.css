@@ -54,6 +54,19 @@ header {
   flex-wrap: wrap;
 }
 
+.header-logo {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  object-fit: cover;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  transition: transform 0.2s ease;
+}
+.header-logo:hover {
+  transform: scale(1.08) rotate(2deg);
+}
+
 header h1 {
   margin: 0;
   font-size: 19px;
@@ -683,7 +696,7 @@ header h1 {
   filter: brightness(0.92);
 }
 
-/* ========== Contenedor de tabla ========== */
+/* ========== Contenedor de tabla (Escritorio) ========== */
 #table-section {
   padding: 16px 20px;
   overflow: auto;
@@ -709,7 +722,7 @@ header h1 {
   color: var(--muted);
 }
 
-/* ========== Tabla (vista de escritorio) ========== */
+/* ========== Tabla (vista tradicional de escritorio) ========== */
 #data-table {
   width: 100%;
   border-collapse: separate;
@@ -752,7 +765,7 @@ header h1 {
 }
 
 /* ——— Vista móvil: tabla -> tarjetas legibles con alto contraste ——— */
-@media (max-width: 860px) {
+@media (max-width: 768px) {
   header {
     flex-direction: column;
     align-items: stretch;

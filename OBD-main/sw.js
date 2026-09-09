@@ -3,7 +3,7 @@
  * Permite instalación en dispositivos móviles / escritorio y funcionamiento offline.
  */
 
-const CACHE_NAME = 'obd-pwa-cache-v1';
+const CACHE_NAME = 'obd-pwa-cache-v2';
 
 const STATIC_ASSETS = [
   './',
@@ -21,67 +21,56 @@ const STATIC_ASSETS = [
   'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js'
 ];
 
-// Instalación: cachear archivos críticos
+// Instalación: forzar activación inmediata
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(STATIC_ASSETS).catch((err) => {
-        console.warn('Algunos recursos no pudieron precachearse:', err);
+        console.warn('Precache completado parcialmente:', err);
       });
-    }).then(() => self.skipWaiting())
+    })
   );
 });
 
-// Activación: limpiar versiones anteriores de caché
+// Activación: limpiar todas las versiones anteriores de caché de inmediato
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.map((key) => {
+          if (key !== CACHE_NAME) {
+            console.log('Eliminando caché obsoleta:', key);
+            return caches.delete(key);
+          }
+        })
       );
     }).then(() => self.clients.claim())
   );
 });
 
-// Intercepción de peticiones
+// Intercepción de peticiones con estrategia Network First (red primero, fallback a caché si no hay internet)
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  const url = new URL(req.url);
 
-  // Peticiones de datos (Firebase): Network First con fallback a caché
-  if (url.hostname.includes('firebaseio.com') || url.hostname.includes('googleapis.com')) {
-    event.respondWith(
-      fetch(req)
-        .then((networkRes) => {
-          // Si es un GET exitoso, guardamos copia en caché para modo offline
-          if (req.method === 'GET' && networkRes.ok) {
-            const resClone = networkRes.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
-          }
-          return networkRes;
-        })
-        .catch(() => {
-          // Fallback a caché si no hay internet
-          return caches.match(req);
-        })
-    );
-    return;
-  }
-
-  // Recursos estáticos: Stale-While-Revalidate
   event.respondWith(
-    caches.match(req).then((cachedRes) => {
-      const fetchPromise = fetch(req)
-        .then((networkRes) => {
-          if (networkRes && networkRes.status === 200 && req.method === 'GET') {
-            const resClone = networkRes.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
+    fetch(req)
+      .then((networkRes) => {
+        // Si responde la red correctamente y es GET, actualizamos la copia en caché
+        if (networkRes && networkRes.status === 200 && req.method === 'GET') {
+          const resClone = networkRes.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
+        }
+        return networkRes;
+      })
+      .catch(() => {
+        // Si no hay red (offline), responder con lo que haya en caché
+        return caches.match(req).then((cachedRes) => {
+          if (cachedRes) return cachedRes;
+          if (req.mode === 'navigate') {
+            return caches.match('./index.html');
           }
-          return networkRes;
-        })
-        .catch(() => cachedRes);
-
-      return cachedRes || fetchPromise;
-    })
+        });
+      })
   );
 });

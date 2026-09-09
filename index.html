@@ -10,14 +10,15 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="OBD Datos">
-  <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="apple-touch-icon" href="obd-logo.jpg">
+  <link rel="icon" type="image/jpeg" href="obd-logo.jpg">
   <!-- Hoja de estilos principal -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=3.2">
 </head>
 <body>
   <header>
     <div class="header-brand">
+      <img src="obd-logo.jpg" alt="Logo OBD" class="header-logo" />
       <h1>Gestión de datos OBD</h1>
       <span id="data-source-badge" class="badge-source" title="Origen de los datos mostrados">Cargando datos...</span>
     </div>
@@ -284,9 +285,9 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 
   <!-- Configuración y conexión Firebase -->
-  <script src="firebase-config.js"></script>
+  <script src="firebase-config.js?v=3.0"></script>
 
   <!-- Script principal de la aplicación -->
-  <script src="script.js"></script>
+  <script src="script.js?v=3.0"></script>
 </body>
 </html>
