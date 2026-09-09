@@ -63,7 +63,7 @@ let firebaseInitialized = false;
 function initFirebase() {
   const cfg = getActiveFirebaseConfig();
   if (!cfg.apiKey || !cfg.projectId) {
-    return null; // Si no hay apiKey, se usará la REST API nativa de Realtime Database
+    return null;
   }
 
   if (!cfg.databaseURL && cfg.projectId) {
@@ -102,6 +102,43 @@ function getNormalizedRtdbUrl(url) {
 }
 
 /**
+ * Sanitiza las claves de un objeto para Firebase Realtime Database.
+ * Firebase prohíbe explícitamente los caracteres: . $ # [ ] / en las claves.
+ * Por ejemplo: "Fe.contabilización" se transforma en "Fe_contabilización".
+ */
+function sanitizeRecordForFirebase(record) {
+  const clean = {};
+  for (const key in record) {
+    if (!key.startsWith('__')) {
+      const safeKey = key.replace(/[.#$\[\]\/]/g, '_');
+      clean[safeKey] = record[key] !== undefined && record[key] !== null ? String(record[key]) : '';
+    }
+  }
+  return clean;
+}
+
+/**
+ * Restaura las claves originales provenientes de Firebase para mantener
+ * compatibilidad total con los filtros y nombres de columnas de la web.
+ */
+function desanitizeRecordFromFirebase(record) {
+  if (!record || typeof record !== 'object') return record;
+  const original = {};
+  for (const key in record) {
+    if (key === 'Fe_contabilización' || key === 'Fe_contabilizacion') {
+      original['Fe.contabilización'] = record[key];
+    } else {
+      original[key] = record[key];
+    }
+  }
+  // Garantizar que la propiedad canónica exista siempre
+  if (!original['Fe.contabilización'] && (record['Fe_contabilización'] || record['Fe_contabilizacion'])) {
+    original['Fe.contabilización'] = record['Fe_contabilización'] || record['Fe_contabilizacion'];
+  }
+  return original;
+}
+
+/**
  * Guarda datos en Firebase reemplazando TODO lo anterior.
  * Funciona mediante SDK si hay apiKey o mediante REST API HTTPS directa de Firebase.
  * @param {Array} records - Lista de objetos de filas
@@ -112,15 +149,9 @@ async function saveToFirebase(records) {
   }
 
   const cfg = getActiveFirebaseConfig();
-  const cleanRecords = records.map(r => {
-    const clean = {};
-    for (const key in r) {
-      if (!key.startsWith('__')) {
-        clean[key] = r[key] !== undefined && r[key] !== null ? r[key] : '';
-      }
-    }
-    return clean;
-  });
+  
+  // Sanitizar claves prohibidas por Firebase (como el punto en "Fe.contabilización")
+  const cleanRecords = records.map(sanitizeRecordForFirebase);
 
   const metadata = {
     updatedAt: new Date().toISOString(),
@@ -153,7 +184,7 @@ async function saveToFirebase(records) {
     }
   }
 
-  // 3) REST API Nativa de Firebase Realtime Database (100% HTTPS por puerto 443 - Inmune a bloqueos de websockets)
+  // 3) REST API Nativa de Firebase Realtime Database (100% HTTPS por puerto 443 - Sin bloqueos de Zscaler)
   const baseUrl = getNormalizedRtdbUrl(cfg.databaseURL);
   
   // Guardar datos (PUT reemplaza completamente el nodo obd_data)
@@ -196,8 +227,9 @@ async function loadFromFirebase() {
       const snap = await db.collection('obd_data').doc('current').get();
       if (snap.exists) {
         const data = snap.data();
+        const rawRecords = Array.isArray(data.records) ? data.records : [];
         return {
-          records: Array.isArray(data.records) ? data.records : [],
+          records: rawRecords.map(desanitizeRecordFromFirebase),
           meta: data.meta || {}
         };
       }
@@ -215,13 +247,13 @@ async function loadFromFirebase() {
         if (val) {
           const metaSnap = await db.ref('obd_meta').once('value');
           const meta = metaSnap.val() || {};
-          let records = [];
+          let rawList = [];
           if (Array.isArray(val)) {
-            records = val.filter(Boolean);
+            rawList = val.filter(Boolean);
           } else if (typeof val === 'object') {
-            records = Object.values(val);
+            rawList = Object.values(val);
           }
-          return { records, meta };
+          return { records: rawList.map(desanitizeRecordFromFirebase), meta };
         }
       }
     } catch (e) {
@@ -246,14 +278,14 @@ async function loadFromFirebase() {
       }
     } catch (e) {}
 
-    let records = [];
+    let rawList = [];
     if (Array.isArray(val)) {
-      records = val.filter(Boolean);
+      rawList = val.filter(Boolean);
     } else if (typeof val === 'object') {
-      records = Object.values(val);
+      rawList = Object.values(val);
     }
 
-    return { records, meta };
+    return { records: rawList.map(desanitizeRecordFromFirebase), meta };
   } catch (err) {
     console.warn('Error al leer desde REST API de Firebase:', err);
     return null;
@@ -270,7 +302,6 @@ async function testFirebaseConnection(configToTest) {
   const baseUrl = getNormalizedRtdbUrl(testCfg.databaseURL);
 
   try {
-    // Si tiene apiKey, probamos por SDK si está disponible
     if (testCfg.apiKey && typeof firebase !== 'undefined') {
       let testApp;
       try {
@@ -290,7 +321,6 @@ async function testFirebaseConnection(configToTest) {
       return { success: true, message: '¡Conexión exitosa a Firebase por SDK!' };
     }
 
-    // Probar por REST API
     const res = await fetch(`${baseUrl}/obd_meta.json?t=${Date.now()}`);
     if (res.ok) {
       return { success: true, message: `¡Conexión exitosa a Realtime Database (${baseUrl})!` };

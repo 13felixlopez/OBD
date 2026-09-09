@@ -102,10 +102,12 @@ function debounce(fn, wait = 150) {
  */
 function prepareDataset() {
   dataset = dataset.map(row => {
-    const fechaISO = toISODate(row['Fe.contabilización']);
+    const rawFecha = row['Fe.contabilización'] || row['Fe_contabilización'] || row['Fe_contabilizacion'] || '';
+    const fechaISO = toISODate(rawFecha);
     const loteRaw  = row['Lote'] ?? '';
     return {
       ...row,
+      'Fe.contabilización': rawFecha,
       __fechaISO: fechaISO,
       __loteUC: String(loteRaw).toUpperCase()
     };
