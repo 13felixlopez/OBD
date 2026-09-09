@@ -445,6 +445,10 @@ header h1 {
   overflow-y: auto;
 }
 
+.modal-card.modal-sm {
+  max-width: 390px;
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -528,14 +532,121 @@ header h1 {
   border-radius: 0 0 12px 12px;
 }
 
-/* ========== Filtros ========== */
+/* ========== Buscador Global Único ========== */
+.search-section {
+  padding: 12px 20px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  background: #f8fafc;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 0 12px;
+  transition: all 0.2s ease;
+}
+
+.search-box:focus-within {
+  background: #ffffff;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.15);
+}
+
+.search-icon {
+  font-size: 15px;
+  color: var(--muted);
+  margin-right: 8px;
+  user-select: none;
+}
+
+#global-search {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 10px 0;
+  font-size: 14px;
+  color: var(--text);
+  outline: none;
+}
+
+#global-search::placeholder {
+  color: #94a3b8;
+}
+
+.clear-search-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.clear-search-btn:hover {
+  color: var(--text);
+}
+
+.toggle-filters-btn {
+  background: #f1f5f9;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.toggle-filters-btn:hover {
+  background: #e2e8f0;
+}
+.toggle-filters-btn.active {
+  background: #e0f2fe;
+  color: var(--brand);
+  border-color: #bae6fd;
+}
+
+.btn-install {
+  background: #10b981 !important;
+  border-color: #059669 !important;
+  color: #fff !important;
+  font-weight: 700;
+  animation: pulseInstall 2.5s infinite;
+}
+@keyframes pulseInstall {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+/* ========== Filtros Específicos ========== */
 #filters {
   padding: 14px 20px;
-  background: #fff;
+  background: #f8fafc;
   display: grid;
   grid-template-columns: repeat(12, 1fr);
   gap: 12px 16px;
   border-bottom: 1px solid var(--border);
+  transition: all 0.25s ease-in-out;
+}
+
+#filters.filters-collapsed {
+  display: none !important;
 }
 .filter {
   display: flex;
@@ -640,17 +751,34 @@ header h1 {
   background: #e5e7eb;
 }
 
-/* ——— Vista móvil: tabla -> tarjetas legibles ——— */
-@media (max-width: 768px) {
+/* ——— Vista móvil: tabla -> tarjetas legibles con alto contraste ——— */
+@media (max-width: 860px) {
   header {
     flex-direction: column;
     align-items: stretch;
+    padding: 12px 14px;
   }
   .header-brand {
     justify-content: space-between;
   }
   .header-nav {
     justify-content: flex-start;
+  }
+
+  /* Ocultar opciones de administración y carga en móvil */
+  #btn-view-upload,
+  #btn-open-config {
+    display: none !important;
+  }
+
+  .search-container {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .toggle-filters-btn {
+    justify-content: center;
+    width: 100%;
   }
 
   #filters {
@@ -671,43 +799,91 @@ header h1 {
     width: 100%;
   }
 
-  #data-table thead { display: none; }
-  #data-table, #data-table tbody, #data-table tr, #data-table td {
-    display: block;
-    width: 100%;
+  /* Contenedor con fondo gris para que las tarjetas blancas contrasten */
+  #table-section {
+    padding: 14px 10px;
+    background: #f1f5f9;
   }
-  #data-table tr {
-    border: 1px solid #e5e7eb;
-    border-radius: 12px;
-    padding: 10px;
+
+  .table-toolbar {
     margin-bottom: 12px;
-    background: #fff;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    padding: 0 4px;
   }
+
+  /* Ocultar cabecera de tabla y transformar cada fila en una tarjeta independiente */
+  #data-table thead {
+    display: none !important;
+  }
+  #data-table,
+  #data-table tbody,
+  #data-table tr,
   #data-table td {
-    border: 0;
-    border-bottom: 1px dashed #e5e7eb;
-    padding: 8px 0;
-    display: flex;
+    display: block !important;
+    width: 100% !important;
+  }
+
+  /* Tarjeta móvil */
+  #data-table tr {
+    border: 1px solid #e2e8f0;
+    border-left: 5px solid var(--brand);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+    background: #ffffff !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  #data-table tr:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+
+  /* Filas de datos dentro de la tarjeta */
+  #data-table td {
+    border: none !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    padding: 8px 0 !important;
+    display: flex !important;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    font-size: 13.5px;
+    color: #1e293b;
+    text-align: right;
+    background: transparent !important;
   }
+
   #data-table td:last-child {
-    border-bottom: 0;
+    border-bottom: none !important;
+    padding-bottom: 2px !important;
   }
+
+  /* Etiqueta del campo en la tarjeta */
   #data-table td::before {
     content: attr(data-label);
     font-weight: 700;
-    color: #6b7280;
-    font-size: 12px;
+    color: #64748b;
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
     flex: 0 0 auto;
-    min-width: 44%;
+    min-width: 42%;
+    max-width: 48%;
+    text-align: left;
   }
+
+  /* Botón de copiar referencia optimizado para pantallas táctiles */
   .copy-ref {
-    padding: 6px 10px;
+    padding: 6px 12px;
     font-size: 14px;
     border-radius: 8px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: var(--brand);
+    font-weight: 600;
+    touch-action: manipulation;
+  }
+  .copy-ref:hover {
+    background: #dbeafe;
   }
 
   .upload-container {

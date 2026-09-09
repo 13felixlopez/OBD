@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0069d9" />
+      <stop offset="100%" stop-color="#0056b3" />
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Fondo con esquinas redondeadas estilo App Icon -->
+  <rect width="512" height="512" rx="110" fill="url(#bgGrad)" />
+
+  <!-- Símbolo de tabla / portapapeles con datos -->
+  <g filter="url(#dropShadow)" transform="translate(106, 80)">
+    <!-- Base de la tarjeta blanca -->
+    <rect x="0" y="30" width="300" height="340" rx="24" fill="#ffffff" />
+
+    <!-- Clip superior del portapapeles -->
+    <rect x="85" y="10" width="130" height="40" rx="10" fill="#007BFF" />
+    <circle cx="150" cy="28" r="8" fill="#ffffff" />
+
+    <!-- Filas de datos estilizadas -->
+    <rect x="35" y="95" width="230" height="18" rx="6" fill="#e2e8f0" />
+    
+    <rect x="35" y="135" width="70" height="14" rx="4" fill="#3b82f6" />
+    <rect x="120" y="135" width="145" height="14" rx="4" fill="#cbd5e1" />
+
+    <rect x="35" y="165" width="90" height="14" rx="4" fill="#10b981" />
+    <rect x="140" y="165" width="125" height="14" rx="4" fill="#cbd5e1" />
+
+    <rect x="35" y="195" width="60" height="14" rx="4" fill="#f59e0b" />
+    <rect x="110" y="195" width="155" height="14" rx="4" fill="#cbd5e1" />
+
+    <!-- Letras OBD grandes en la parte inferior de la tarjeta -->
+    <text x="150" y="315" 
+          font-family="system-ui, -apple-system, sans-serif" 
+          font-size="64" 
+          font-weight="900" 
+          letter-spacing="4" 
+          fill="#0056b3" 
+          text-anchor="middle">OBD</text>
+  </g>
+</svg>

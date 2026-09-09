@@ -4,6 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Gestión de datos OBD</title>
+  <!-- Metadatos y Manifiesto PWA -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#007BFF">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="OBD Datos">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
   <!-- Hoja de estilos principal -->
   <link rel="stylesheet" href="style.css">
 </head>
@@ -14,6 +22,7 @@
       <span id="data-source-badge" class="badge-source" title="Origen de los datos mostrados">Cargando datos...</span>
     </div>
     <nav class="header-nav">
+      <button id="btn-install-pwa" class="nav-btn btn-install" style="display: none;" title="Instalar como aplicación en este dispositivo">📲 Instalar App</button>
       <button id="btn-view-table" class="nav-btn active" title="Ver tabla de datos">📊 Ver Registros</button>
       <button id="btn-view-upload" class="nav-btn" title="Cargar o pegar datos de Excel">📤 Cargar / Pegar Excel</button>
       <button id="btn-open-config" class="nav-btn btn-secondary" title="Configurar credenciales de Firebase">⚙️ Config Firebase</button>
@@ -115,8 +124,22 @@
     </div>
   </section>
 
-  <!-- ================= SECCIÓN DE FILTROS ================= -->
-  <section id="filters">
+  <!-- ================= BUSCADOR GLOBAL RÁPIDO ================= -->
+  <section id="search-section" class="search-section">
+    <div class="search-container">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="global-search" placeholder="Búsqueda rápida en todo (Lote, Referencia, Acopio, Material, Centro)..." autocomplete="off" />
+        <button id="clear-search" class="clear-search-btn" title="Limpiar búsqueda" style="display: none;">&times;</button>
+      </div>
+      <button id="btn-toggle-filters" class="toggle-filters-btn" title="Alternar filtros específicos">
+        <span>Filtros específicos</span> <span id="filters-toggle-icon">▼</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ================= SECCIÓN DE FILTROS ESPECÍFICOS ================= -->
+  <section id="filters" class="filters-collapsed">
     <!-- Filtro por Acopio (Nombre 1) -->
     <div class="filter">
       <label for="filter-nombre">Acopio (Nombre&nbsp;1):</label>
@@ -172,6 +195,30 @@
       </tbody>
     </table>
   </section>
+
+  <!-- ================= MODAL CONTRASEÑA ADMINISTRADOR ================= -->
+  <div id="auth-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h3>🔒 Acceso Administrador</h3>
+        <button id="btn-close-auth-modal" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">Ingresa la contraseña para acceder a la configuración:</p>
+        <div class="form-group">
+          <label for="admin-password-input">Contraseña:</label>
+          <input type="password" id="admin-password-input" placeholder="Ingresa contraseña..." autocomplete="off" />
+        </div>
+        <div id="auth-error-msg" class="test-result test-error" style="display: none;">
+          ❌ Contraseña incorrecta. Acceso denegado.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-cancel-auth" class="action-btn secondary">Cancelar</button>
+        <button id="btn-submit-auth" class="action-btn primary">Entrar</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ================= MODAL CONFIGURACIÓN FIREBASE ================= -->
   <div id="firebase-modal" class="modal-overlay" style="display: none;">

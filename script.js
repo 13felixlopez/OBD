@@ -105,11 +105,24 @@ function prepareDataset() {
     const rawFecha = row['Fe.contabilización'] || row['Fe_contabilización'] || row['Fe_contabilizacion'] || '';
     const fechaISO = toISODate(rawFecha);
     const loteRaw  = row['Lote'] ?? '';
+
+    // Índice de búsqueda global que agrupa todas las columnas
+    const searchCorpus = [
+      row['Centro'],
+      row['Nombre 1'],
+      rawFecha,
+      loteRaw,
+      row['Referencia'],
+      row['Cantidad'],
+      row['Texto breve de material']
+    ].filter(Boolean).join(' ').toLowerCase();
+
     return {
       ...row,
       'Fe.contabilización': rawFecha,
       __fechaISO: fechaISO,
-      __loteUC: String(loteRaw).toUpperCase()
+      __loteUC: String(loteRaw).toUpperCase(),
+      __searchCorpus: searchCorpus
     };
   });
 }
@@ -462,7 +475,7 @@ function showPreview(records) {
     
     document.getElementById('link-open-config-alert')?.addEventListener('click', (e) => {
       e.preventDefault();
-      openFirebaseModal();
+      openAuthModal();
     });
   } else {
     alertBox.style.display = 'none';
@@ -479,7 +492,7 @@ async function handleSaveToFirebase() {
   }
 
   if (!isFirebaseConfigured()) {
-    openFirebaseModal();
+    openAuthModal();
     alert('Por favor ingresa tus credenciales de Firebase para poder guardar.');
     return;
   }
@@ -574,7 +587,9 @@ function initPage() {
       if (fechaInput)     fechaInput.value = '';
       if (materialSelect) materialSelect.value = '';
       if (loteInput)      loteInput.value = '';
-      renderTable(dataset);
+      const globalSearch = document.getElementById('global-search');
+      if (globalSearch) globalSearch.value = '';
+      applyFilters();
     };
   }
 
@@ -719,13 +734,30 @@ function renderTable(data) {
 
 // -------------------- Filtros --------------------
 function applyFilters() {
+  const globalQ  = (document.getElementById('global-search')?.value || '').trim().toLowerCase();
   const nombre   = document.getElementById('filter-nombre')?.value || '';
   const fechaISO = document.getElementById('filter-fecha')?.value || '';
   const material = document.getElementById('filter-material')?.value || '';
   const loteQ    = (document.getElementById('filter-lote')?.value || '').trim().toUpperCase();
 
+  // Controlar botón para limpiar búsqueda rápida
+  const clearSearchBtn = document.getElementById('clear-search');
+  if (clearSearchBtn) {
+    clearSearchBtn.style.display = globalQ ? 'block' : 'none';
+  }
+
   let filtered = dataset;
 
+  // 1) Búsqueda Global (multi-término en todas las columnas)
+  if (globalQ) {
+    const terms = globalQ.split(/\s+/).filter(Boolean);
+    filtered = filtered.filter(r => {
+      const corpus = r.__searchCorpus || '';
+      return terms.every(t => corpus.includes(t));
+    });
+  }
+
+  // 2) Filtros específicos por columna
   if (nombre) {
     filtered = filtered.filter(r => (r['Nombre 1'] || '') === nombre);
   }
@@ -750,24 +782,70 @@ function updateRowCount(count) {
 
 // -------------------- Vistas y Navegación --------------------
 function switchView(viewName) {
-  const uploadSec = document.getElementById('upload-section');
-  const filtersSec = document.getElementById('filters');
-  const tableSec = document.getElementById('table-section');
-  const btnTable = document.getElementById('btn-view-table');
-  const btnUpload = document.getElementById('btn-view-upload');
+  const uploadSec   = document.getElementById('upload-section');
+  const searchSec   = document.getElementById('search-section');
+  const filtersSec  = document.getElementById('filters');
+  const tableSec    = document.getElementById('table-section');
+  const btnTable    = document.getElementById('btn-view-table');
+  const btnUpload   = document.getElementById('btn-view-upload');
 
   if (viewName === 'upload') {
     uploadSec.style.display = 'block';
-    filtersSec.style.display = 'none';
-    tableSec.style.display = 'none';
+    if (searchSec) searchSec.style.display = 'none';
+    if (filtersSec) filtersSec.style.display = 'none';
+    if (tableSec) tableSec.style.display = 'none';
     btnUpload.classList.add('active');
     btnTable.classList.remove('active');
   } else {
     uploadSec.style.display = 'none';
-    filtersSec.style.display = 'grid';
-    tableSec.style.display = 'block';
+    if (searchSec) searchSec.style.display = 'block';
+    if (filtersSec) {
+      const isCollapsed = filtersSec.classList.contains('filters-collapsed');
+      filtersSec.style.display = isCollapsed ? 'none' : 'grid';
+    }
+    if (tableSec) tableSec.style.display = 'block';
     btnTable.classList.add('active');
     btnUpload.classList.remove('active');
+  }
+}
+
+// -------------------- Modal de Autenticación (Contraseña Administrador) --------------------
+const ADMIN_PASSWORD = '161097';
+
+function openAuthModal() {
+  const authModal = document.getElementById('auth-modal');
+  const input = document.getElementById('admin-password-input');
+  const errorMsg = document.getElementById('auth-error-msg');
+  if (!authModal) return;
+
+  if (input) input.value = '';
+  if (errorMsg) errorMsg.style.display = 'none';
+
+  authModal.style.display = 'flex';
+  setTimeout(() => input?.focus(), 80);
+}
+
+function closeAuthModal() {
+  const authModal = document.getElementById('auth-modal');
+  if (authModal) authModal.style.display = 'none';
+}
+
+function verifyAdminPassword() {
+  const input = document.getElementById('admin-password-input');
+  const errorMsg = document.getElementById('auth-error-msg');
+  const entered = (input?.value || '').trim();
+
+  if (entered === ADMIN_PASSWORD) {
+    closeAuthModal();
+    openFirebaseModal();
+  } else {
+    if (errorMsg) {
+      errorMsg.style.display = 'block';
+    }
+    if (input) {
+      input.value = '';
+      input.focus();
+    }
   }
 }
 
@@ -803,10 +881,26 @@ document.addEventListener('DOMContentLoaded', () => {
   // 2) Cambio de vistas en cabecera
   document.getElementById('btn-view-table')?.addEventListener('click', () => switchView('table'));
   document.getElementById('btn-view-upload')?.addEventListener('click', () => switchView('upload'));
-  document.getElementById('btn-open-config')?.addEventListener('click', openFirebaseModal);
+  
+  // Botón de configuración protegido por contraseña
+  document.getElementById('btn-open-config')?.addEventListener('click', openAuthModal);
   document.getElementById('btn-close-modal')?.addEventListener('click', closeFirebaseModal);
 
-  // Cerrar modal al hacer clic en el fondo oscuro
+  // Listeners del modal de contraseña
+  document.getElementById('btn-close-auth-modal')?.addEventListener('click', closeAuthModal);
+  document.getElementById('btn-cancel-auth')?.addEventListener('click', closeAuthModal);
+  document.getElementById('btn-submit-auth')?.addEventListener('click', verifyAdminPassword);
+  document.getElementById('admin-password-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      verifyAdminPassword();
+    }
+  });
+
+  // Cerrar modales al hacer clic en el fondo oscuro
+  document.getElementById('auth-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'auth-modal') closeAuthModal();
+  });
   document.getElementById('firebase-modal')?.addEventListener('click', (e) => {
     if (e.target.id === 'firebase-modal') closeFirebaseModal();
   });
@@ -953,6 +1047,73 @@ document.addEventListener('DOMContentLoaded', () => {
     closeFirebaseModal();
 
     loadDataset();
+  });
+
+  // 8) Buscador Global Rápido
+  const globalSearchInput = document.getElementById('global-search');
+  const clearSearchBtn    = document.getElementById('clear-search');
+  const debouncedSearch   = debounce(applyFilters, 150);
+
+  globalSearchInput?.addEventListener('input', debouncedSearch);
+  clearSearchBtn?.addEventListener('click', () => {
+    if (globalSearchInput) globalSearchInput.value = '';
+    debouncedSearch();
+    globalSearchInput?.focus();
+  });
+
+  // 9) Alternar visibilidad de filtros específicos
+  const toggleFiltersBtn = document.getElementById('btn-toggle-filters');
+  const filtersSec       = document.getElementById('filters');
+  const toggleIcon       = document.getElementById('filters-toggle-icon');
+
+  toggleFiltersBtn?.addEventListener('click', () => {
+    const isCurrentlyCollapsed = filtersSec.classList.contains('filters-collapsed');
+    if (isCurrentlyCollapsed) {
+      filtersSec.classList.remove('filters-collapsed');
+      filtersSec.style.display = 'grid';
+      toggleFiltersBtn.classList.add('active');
+      if (toggleIcon) toggleIcon.textContent = '▲';
+    } else {
+      filtersSec.classList.add('filters-collapsed');
+      filtersSec.style.display = 'none';
+      toggleFiltersBtn.classList.remove('active');
+      if (toggleIcon) toggleIcon.textContent = '▼';
+    }
+  });
+
+  // 10) PWA: Registro de Service Worker para funcionamiento offline e instalación
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js')
+        .then(reg => console.log('Service Worker PWA activo:', reg.scope))
+        .catch(err => console.warn('Aviso PWA SW:', err));
+    });
+  }
+
+  // 11) PWA: Botón de instalación en pantalla de inicio
+  let deferredPrompt;
+  const btnInstall = document.getElementById('btn-install-pwa');
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (btnInstall) {
+      btnInstall.style.display = 'inline-flex';
+    }
+  });
+
+  btnInstall?.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log('Resultado de instalación PWA:', outcome);
+    deferredPrompt = null;
+    btnInstall.style.display = 'none';
+  });
+
+  window.addEventListener('appinstalled', () => {
+    console.log('¡Aplicación OBD instalada como PWA!');
+    if (btnInstall) btnInstall.style.display = 'none';
   });
 });
 
