@@ -1,20 +1,27 @@
 /*
  * script.js
  *
- * Fuente principal: Google Sheets (API gviz). Fallback: OBD.xlsx local.
- * Filtros: Acopio (Nombre 1), Lote (texto en mayúsculas), Tipo de material y Fecha.
- * Mejora: botón 📋 junto a cada “Referencia” para copiarla al portapapeles.
- * Rendimiento/UI: debounce en filtros, normalización previa y render por lotes.
+ * Gestión de datos OBD con sincronización en Firebase.
+ * Prioridad de carga:
+ *   1) Firebase (Realtime Database o Firestore) -> datos persistentes actualizados por los usuarios.
+ *   2) Google Sheets (API gviz).
+ *   3) Archivo Excel local (OBD.xlsx).
+ *
+ * Modos de actualización de datos:
+ *   - Pegar directamente desde Excel (Ctrl+C en Excel -> Ctrl+V en la web).
+ *   - Subir archivo Excel (.xlsx, .xls, .csv).
+ *   - Al guardar en Firebase, se elimina el lote de datos anterior y se guarda el nuevo.
  */
 
-// -------------------- Configuración --------------------
+// -------------------- Estado Global --------------------
 let dataset = [];
+let pendingUploadRecords = [];
 
-// ID del documento y GID de la pestaña (0 = primera hoja)
+// ID del documento y GID de Google Sheets (usado como respaldo si Firebase no está activo)
 const GOOGLE_SHEET_ID  = '1rfE4dFe5cHtQMIc4mt-Lx-QmdVjMsKcR';
 const GOOGLE_SHEET_GID = '0';
 
-// -------------------- Utilidades --------------------
+// -------------------- Utilidades de Formato y Fecha --------------------
 function escapeHtml(str) {
   return String(str)
     .replaceAll('&', '&amp;')
@@ -24,7 +31,9 @@ function escapeHtml(str) {
     .replaceAll("'", '&#39;');
 }
 
-// Normaliza múltiples formatos a ISO "YYYY-MM-DD".
+/**
+ * Normaliza múltiples formatos de fecha a ISO "YYYY-MM-DD".
+ */
 function toISODate(val) {
   if (val == null || val === '') return '';
 
@@ -33,179 +42,569 @@ function toISODate(val) {
     const m = val.match(/^Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?\)$/);
     if (m) {
       const [, y, mo, d, hh='0', mi='0', ss='0'] = m;
-      const dt = new Date(Date.UTC(+y, +mo, +d, +hh, +mi, +ss)); // mes 0-based
+      const dt = new Date(Date.UTC(+y, +mo, +d, +hh, +mi, +ss));
       return dt.toISOString().slice(0, 10);
     }
   }
 
   // "DD/MM/YYYY" o "DD-MM-YYYY"
   if (typeof val === 'string') {
-    let m = val.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    const cleanStr = val.trim();
+    let m = cleanStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
     if (m) {
       const [, dd, mm, yyyy] = m;
       const d2 = String(dd).padStart(2, '0');
       const m2 = String(mm).padStart(2, '0');
       return `${yyyy}-${m2}-${d2}`;
     }
-    // Ya ISO "YYYY-MM-DD"
-    if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
+    // "YYYY-MM-DD"
+    if (/^\d{4}-\d{2}-\d{2}$/.test(cleanStr)) return cleanStr;
   }
 
-  // Serial de Excel
+  // Serial numérico de Excel
   if (typeof val === 'number') {
-    // Excel epoch 1899-12-30
     const ms = Math.round((val - 25569) * 86400 * 1000);
-    return new Date(ms).toISOString().slice(0, 10);
+    const dt = new Date(ms);
+    if (!isNaN(dt)) return dt.toISOString().slice(0, 10);
   }
 
-  // Objeto Date o parseable
+  // Si es un objeto Date
+  if (val instanceof Date && !isNaN(val)) {
+    return val.toISOString().slice(0, 10);
+  }
+
+  // Intento de parseo estándar
   const dt = new Date(val);
-  if (!isNaN(dt)) return dt.toISOString().slice(0, 10);
+  if (!isNaN(dt) && dt.getFullYear() > 1990) {
+    return dt.toISOString().slice(0, 10);
+  }
 
   return '';
 }
 
-// Visualización "DD/MM/YYYY"
+/**
+ * Visualización amigable "DD/MM/YYYY".
+ */
 function formatDateDisplay(val) {
   const iso = toISODate(val);
-  if (!iso) return '';
+  if (!iso) return String(val || '');
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
 }
 
-// Debounce para no recalcular en cada tecla
 function debounce(fn, wait = 150) {
   let t; 
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
 }
 
-// Enriquecer dataset una sola vez (para filtros rápidos)
+/**
+ * Prepara campos auxiliares en el dataset para agilizar los filtros.
+ */
 function prepareDataset() {
   dataset = dataset.map(row => {
     const fechaISO = toISODate(row['Fe.contabilización']);
     const loteRaw  = row['Lote'] ?? '';
     return {
       ...row,
-      __fechaISO: fechaISO,                    // comparación directa contra input date
-      __loteUC: String(loteRaw).toUpperCase()  // búsqueda por lote en mayúsculas
+      __fechaISO: fechaISO,
+      __loteUC: String(loteRaw).toUpperCase()
     };
   });
 }
 
-// -------------------- Carga de datos --------------------
+// -------------------- Carga de Datos Principal --------------------
 async function loadDataset() {
-  // 1) Intentar Google Sheets (gviz JSON)
+  setSourceBadge('Cargando...', 'loading');
+
+  // 1) Intentar leer desde Firebase (primera prioridad)
+  if (typeof loadFromFirebase === 'function' && isFirebaseConfigured()) {
+    try {
+      const fbResult = await loadFromFirebase();
+      if (fbResult && Array.isArray(fbResult.records) && fbResult.records.length > 0) {
+        dataset = fbResult.records;
+        prepareDataset();
+        initPage();
+        
+        let dateStr = '';
+        if (fbResult.meta && fbResult.meta.updatedAt) {
+          const d = new Date(fbResult.meta.updatedAt);
+          dateStr = ` (Actualizado: ${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})})`;
+        }
+        setSourceBadge(`🟢 Firebase: ${dataset.length} registros${dateStr}`, 'firebase');
+        updateSyncTime(fbResult.meta?.updatedAt);
+        return;
+      }
+    } catch (err) {
+      console.warn('No se pudo cargar desde Firebase, usando fallback:', err);
+    }
+  }
+
+  // 2) Intentar Google Sheets (gviz JSON)
   if (GOOGLE_SHEET_ID) {
     try {
       const gvizUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?gid=${GOOGLE_SHEET_GID}&tqx=out:json&t=${Date.now()}`;
       const res = await fetch(gvizUrl);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
+      if (res.ok) {
+        const text = await res.text();
+        const jsonStr = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
+        const gvizData = JSON.parse(jsonStr);
 
-      // Extraer JSON de google.visualization.Query.setResponse(...)
-      const jsonStr = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
-      const gvizData = JSON.parse(jsonStr);
+        const cols = gvizData.table.cols.map(c => c.label || c.id || '');
+        const rows = gvizData.table.rows || [];
 
-      const cols = gvizData.table.cols.map(c => c.label || c.id || '');
-      const rows = gvizData.table.rows || [];
-
-      dataset = rows.map(r => {
-        const obj = {};
-        cols.forEach((label, i) => {
-          const cell = r.c?.[i];
-          let v = cell ? (cell.f ?? cell.v) : '';
-          obj[label] = v ?? '';
+        dataset = rows.map(r => {
+          const obj = {};
+          cols.forEach((label, i) => {
+            const cell = r.c?.[i];
+            let v = cell ? (cell.f ?? cell.v) : '';
+            obj[label] = v ?? '';
+          });
+          return obj;
         });
-        return obj;
-      });
+
+        if (dataset.length > 0) {
+          prepareDataset();
+          initPage();
+          setSourceBadge(`🟡 Google Sheets: ${dataset.length} registros`, 'sheets');
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Fallo al cargar Google Sheets, usando Excel local:', err);
+    }
+  }
+
+  // 3) Fallback: archivo Excel local (OBD.xlsx)
+  try {
+    const res = await fetch('OBD.xlsx');
+    if (res.ok) {
+      const ab  = await res.arrayBuffer();
+      const wb  = XLSX.read(ab, { type: 'array' });
+      const sh  = wb.SheetNames[0];
+      dataset   = XLSX.utils.sheet_to_json(wb.Sheets[sh], { defval: '' });
 
       prepareDataset();
       initPage();
+      setSourceBadge(`⚪ Excel Local: ${dataset.length} registros`, 'local');
       return;
-    } catch (err) {
-      console.warn('Fallo al cargar Google Sheets, uso Excel local:', err);
-      // continuar al fallback
     }
-  }
-
-  // 2) Fallback: archivo Excel local (OBD.xlsx)
-  try {
-    const res = await fetch('OBD.xlsx');
-    const ab  = await res.arrayBuffer();
-    const wb  = XLSX.read(ab, { type: 'array' });
-    const sh  = wb.SheetNames[0];
-    dataset   = XLSX.utils.sheet_to_json(wb.Sheets[sh], { defval: '' });
-
-    prepareDataset();
-    initPage();
   } catch (err) {
     console.error('Error al cargar el Excel local:', err);
   }
+
+  // Si no hay datos disponibles
+  setSourceBadge('⚠️ Sin datos cargados (Usa "Cargar / Pegar Excel")', 'empty');
+  initPage();
 }
 
-// -------------------- Inicialización UI --------------------
+function setSourceBadge(text, type) {
+  const badge = document.getElementById('data-source-badge');
+  if (!badge) return;
+  badge.textContent = text;
+  badge.className = `badge-source badge-${type}`;
+}
+
+function updateSyncTime(isoDateStr) {
+  const el = document.getElementById('last-sync-time');
+  if (!el) return;
+  if (!isoDateStr) {
+    el.textContent = '';
+    return;
+  }
+  try {
+    const dt = new Date(isoDateStr);
+    el.textContent = `Última sincronización: ${dt.toLocaleDateString()} ${dt.toLocaleTimeString()}`;
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+
+// -------------------- Normalización y Parseo de Columnas --------------------
+const CANONICAL_COLUMNS = [
+  'Centro',
+  'Nombre 1',
+  'Fe.contabilización',
+  'Lote',
+  'Referencia',
+  'Cantidad',
+  'Texto breve de material'
+];
+
+const KNOWN_HEADERS = {
+  'Centro': ['centro', 'planta', 'ce', 'almacen'],
+  'Nombre 1': ['nombre 1', 'nombre1', 'acopio', 'nombre de acopio', 'nombre'],
+  'Fe.contabilización': [
+    'fe.contabilizacion', 'fe.contabilización', 'fe.contab', 'fe.contab.',
+    'fecha', 'fecha contabilizacion', 'fecha de contabilizacion', 'fechacontabilizacion', 'fe. contabilizacion'
+  ],
+  'Lote': ['lote', 'batch', 'lote sap'],
+  'Referencia': ['referencia', 'ref', 'ref.', 'referencia sap', 'nro referencia'],
+  'Cantidad': ['cantidad', 'cant', 'cant.', 'ctd', 'cantidad base'],
+  'Texto breve de material': [
+    'texto breve de material', 'texto breve material', 'material',
+    'descripcion', 'descripcion material', 'texto breve'
+  ]
+};
+
+/**
+ * Normaliza nombres de encabezados para reconocer variaciones comunes
+ */
+function normalizeHeaderName(rawHeader) {
+  if (!rawHeader) return '';
+  const s = String(rawHeader).trim().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[._\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Si tiene formato de fecha o es numérico, es un dato
+  if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(s) || /^\d+$/.test(s)) {
+    return '';
+  }
+
+  for (const [canonical, aliases] of Object.entries(KNOWN_HEADERS)) {
+    for (const alias of aliases) {
+      if (s === alias) {
+        return canonical;
+      }
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Parsea texto pegado desde Excel (delimitado por tabulador \t o punto y coma/coma).
+ */
+function parsePastedExcelText(rawText) {
+  if (!rawText || !rawText.trim()) return [];
+
+  const lines = rawText.split(/\r?\n/).map(l => l.trimEnd()).filter(l => l.length > 0);
+  if (lines.length === 0) return [];
+
+  // Detectar delimitador preferente (tabulador por defecto al copiar celdas de Excel)
+  const firstLine = lines[0];
+  let delimiter = '\t';
+  if (!firstLine.includes('\t')) {
+    if (firstLine.includes(';') && (firstLine.match(/;/g) || []).length >= 4) {
+      delimiter = ';';
+    } else if (firstLine.includes(',') && (firstLine.match(/,/g) || []).length >= 4) {
+      delimiter = ',';
+    }
+  }
+
+  const firstTokens = firstLine.split(delimiter).map(t => t.trim());
+  const matchedHeaders = firstTokens.map(normalizeHeaderName);
+  const recognizedCount = matchedHeaders.filter(h => CANONICAL_COLUMNS.includes(h)).length;
+  const hasHeaderRow = recognizedCount >= 3;
+
+  let headers = [];
+  let dataLines = [];
+
+  if (hasHeaderRow) {
+    headers = matchedHeaders;
+    dataLines = lines.slice(1);
+  } else {
+    // Si no trae encabezados, mapear posicionalmente a las 7 columnas canónicas
+    headers = CANONICAL_COLUMNS;
+    dataLines = lines;
+  }
+
+  const records = [];
+  for (const line of dataLines) {
+    const tokens = line.split(delimiter).map(t => t.trim().replace(/^["']|["']$/g, ''));
+    if (tokens.every(t => t === '')) continue; // línea vacía
+
+    const rowObj = {
+      'Centro': '',
+      'Nombre 1': '',
+      'Fe.contabilización': '',
+      'Lote': '',
+      'Referencia': '',
+      'Cantidad': '',
+      'Texto breve de material': ''
+    };
+
+    tokens.forEach((val, idx) => {
+      const colName = headers[idx] || CANONICAL_COLUMNS[idx];
+      if (colName && CANONICAL_COLUMNS.includes(colName)) {
+        rowObj[colName] = val;
+      }
+    });
+
+    // Formatear/normalizar fecha si es necesario
+    if (rowObj['Fe.contabilización']) {
+      const iso = toISODate(rowObj['Fe.contabilización']);
+      if (iso) {
+        rowObj['Fe.contabilización'] = formatDateDisplay(iso);
+      }
+    }
+
+    records.push(rowObj);
+  }
+
+  return records;
+}
+
+/**
+ * Parsea un archivo Excel (.xlsx / .xls) o CSV usando SheetJS.
+ */
+function parseExcelWorkbook(workbook) {
+  const firstSheetName = workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[firstSheetName];
+  
+  const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
+  if (!rawRows || rawRows.length === 0) return [];
+
+  let headerRowIndex = 0;
+  let headers = [];
+
+  for (let r = 0; r < Math.min(rawRows.length, 5); r++) {
+    const candidateHeaders = rawRows[r].map(c => normalizeHeaderName(String(c)));
+    const matchCount = candidateHeaders.filter(h => CANONICAL_COLUMNS.includes(h)).length;
+    if (matchCount >= 3) {
+      headerRowIndex = r;
+      headers = candidateHeaders;
+      break;
+    }
+  }
+
+  if (headers.length === 0) {
+    headerRowIndex = -1;
+    headers = CANONICAL_COLUMNS;
+  }
+
+  const records = [];
+  const startRow = headerRowIndex + 1;
+
+  for (let r = startRow; r < rawRows.length; r++) {
+    const row = rawRows[r];
+    if (!row || row.every(c => c === '' || c == null)) continue;
+
+    const rowObj = {
+      'Centro': '',
+      'Nombre 1': '',
+      'Fe.contabilización': '',
+      'Lote': '',
+      'Referencia': '',
+      'Cantidad': '',
+      'Texto breve de material': ''
+    };
+
+    row.forEach((cellVal, colIdx) => {
+      const colName = headers[colIdx] || CANONICAL_COLUMNS[colIdx];
+      if (colName && CANONICAL_COLUMNS.includes(colName)) {
+        rowObj[colName] = String(cellVal ?? '').trim();
+      }
+    });
+
+    if (rowObj['Fe.contabilización']) {
+      const iso = toISODate(rowObj['Fe.contabilización']);
+      if (iso) {
+        rowObj['Fe.contabilización'] = formatDateDisplay(iso);
+      }
+    }
+
+    records.push(rowObj);
+  }
+
+  return records;
+}
+
+// -------------------- Previsualización y Guardado en Firebase --------------------
+function showPreview(records) {
+  pendingUploadRecords = records;
+  const container = document.getElementById('preview-container');
+  const countBadge = document.getElementById('preview-count');
+  const tbody = document.getElementById('preview-table-body');
+  const note = document.getElementById('preview-note');
+  const alertBox = document.getElementById('preview-alert');
+
+  if (!container || !countBadge || !tbody) return;
+
+  if (!records || records.length === 0) {
+    alert('No se detectaron registros válidos en los datos proporcionados.');
+    container.style.display = 'none';
+    return;
+  }
+
+  countBadge.textContent = `${records.length} registros listos`;
+  tbody.innerHTML = '';
+
+  const sampleRows = records.slice(0, 8);
+  sampleRows.forEach((row, idx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${idx + 1}</td>
+      <td>${escapeHtml(row['Centro'] || '')}</td>
+      <td>${escapeHtml(row['Nombre 1'] || '')}</td>
+      <td>${escapeHtml(row['Fe.contabilización'] || '')}</td>
+      <td><strong>${escapeHtml(row['Lote'] || '')}</strong></td>
+      <td><code>${escapeHtml(row['Referencia'] || '')}</code></td>
+      <td>${escapeHtml(row['Cantidad'] || '')}</td>
+      <td>${escapeHtml(row['Texto breve de material'] || '')}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  if (records.length > 8) {
+    note.textContent = `Mostrando 8 de ${records.length} registros. Al guardar se sincronizarán todos los registros.`;
+  } else {
+    note.textContent = `Mostrando la totalidad de los ${records.length} registros a guardar.`;
+  }
+
+  if (!isFirebaseConfigured()) {
+    alertBox.style.display = 'block';
+    alertBox.className = 'alert-box alert-warning';
+    alertBox.innerHTML = `⚠️ <strong>Firebase aún no está configurado.</strong> Haz clic en <a href="#" id="link-open-config-alert">⚙️ Config Firebase</a> para ingresar tus credenciales antes de guardar.`;
+    
+    document.getElementById('link-open-config-alert')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      openFirebaseModal();
+    });
+  } else {
+    alertBox.style.display = 'none';
+  }
+
+  container.style.display = 'block';
+  container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function handleSaveToFirebase() {
+  if (!pendingUploadRecords || pendingUploadRecords.length === 0) {
+    alert('No hay registros preparados para guardar.');
+    return;
+  }
+
+  if (!isFirebaseConfigured()) {
+    openFirebaseModal();
+    alert('Por favor ingresa tus credenciales de Firebase para poder guardar.');
+    return;
+  }
+
+  const count = pendingUploadRecords.length;
+  const confirmed = confirm(
+    `¿Confirmas el guardado en Firebase?\n\nEsta acción BORRARÁ los registros anteriores en la base de datos y guardará los ${count} nuevos registros.`
+  );
+  if (!confirmed) return;
+
+  const btnSave = document.getElementById('btn-save-firebase');
+  const statusDiv = document.getElementById('save-status');
+
+  if (btnSave) {
+    btnSave.disabled = true;
+    btnSave.textContent = '⏳ Guardando en Firebase...';
+  }
+  if (statusDiv) {
+    statusDiv.style.display = 'block';
+    statusDiv.className = 'save-status-msg status-loading';
+    statusDiv.textContent = 'Reemplazando datos en Firebase, por favor espera...';
+  }
+
+  try {
+    const result = await saveToFirebase(pendingUploadRecords);
+    
+    dataset = [...pendingUploadRecords];
+    prepareDataset();
+    initPage();
+
+    setSourceBadge(`🟢 Firebase: ${dataset.length} registros (Actualizado)`, 'firebase');
+    updateSyncTime(new Date().toISOString());
+
+    if (statusDiv) {
+      statusDiv.className = 'save-status-msg status-success';
+      statusDiv.textContent = `✅ ¡Guardado exitoso! Se guardaron ${result.count} registros en Firebase. Se eliminaron los datos anteriores.`;
+    }
+
+    const pasteInput = document.getElementById('paste-input');
+    if (pasteInput) pasteInput.value = '';
+    const fileTag = document.getElementById('selected-file-name');
+    if (fileTag) fileTag.textContent = '';
+
+    setTimeout(() => {
+      switchView('table');
+      if (btnSave) {
+        btnSave.disabled = false;
+        btnSave.textContent = '🗑️ Borrar anteriores y Guardar en Firebase';
+      }
+      document.getElementById('preview-container').style.display = 'none';
+      if (statusDiv) statusDiv.style.display = 'none';
+    }, 1800);
+
+  } catch (err) {
+    console.error('Error al guardar en Firebase:', err);
+    if (statusDiv) {
+      statusDiv.className = 'save-status-msg status-error';
+      statusDiv.textContent = `❌ Error al guardar en Firebase: ${err.message || err}`;
+    }
+    if (btnSave) {
+      btnSave.disabled = false;
+      btnSave.textContent = '🗑️ Borrar anteriores y Guardar en Firebase';
+    }
+  }
+}
+
+// -------------------- Inicialización UI de Filtros y Tabla --------------------
 function initPage() {
-  if (document.getElementById('data-table')) {
-    populateFilters();
-    renderTable(dataset);
+  populateFilters();
+  renderTable(dataset);
 
-    const nombreSelect   = document.getElementById('filter-nombre');
-    const fechaInput     = document.getElementById('filter-fecha');
-    const materialSelect = document.getElementById('filter-material');
-    const loteInput      = document.getElementById('filter-lote');
-    const clearBtn       = document.getElementById('clear-filters');
+  const nombreSelect   = document.getElementById('filter-nombre');
+  const fechaInput     = document.getElementById('filter-fecha');
+  const materialSelect = document.getElementById('filter-material');
+  const loteInput      = document.getElementById('filter-lote');
+  const clearBtn       = document.getElementById('clear-filters');
 
-    const debouncedApply = debounce(applyFilters, 150);
+  const debouncedApply = debounce(applyFilters, 150);
 
-    if (nombreSelect)   nombreSelect.addEventListener('change', debouncedApply);
-    if (fechaInput)     fechaInput.addEventListener('change', debouncedApply);
-    if (materialSelect) materialSelect.addEventListener('change', debouncedApply);
-    if (loteInput) {
-      loteInput.addEventListener('input', function () {
-        this.value = this.value.toUpperCase();
-        debouncedApply();
-      });
-    }
-    if (clearBtn) {
-      clearBtn.addEventListener('click', function () {
-        if (nombreSelect)   nombreSelect.value = '';
-        if (fechaInput)     fechaInput.value = '';
-        if (materialSelect) materialSelect.value = '';
-        if (loteInput)      loteInput.value = '';
-        renderTable(dataset);
-      });
-    }
+  if (nombreSelect)   nombreSelect.onchange = debouncedApply;
+  if (fechaInput)     fechaInput.onchange = debouncedApply;
+  if (materialSelect) materialSelect.onchange = debouncedApply;
+  if (loteInput) {
+    loteInput.oninput = function () {
+      this.value = this.value.toUpperCase();
+      debouncedApply();
+    };
+  }
+  if (clearBtn) {
+    clearBtn.onclick = function () {
+      if (nombreSelect)   nombreSelect.value = '';
+      if (fechaInput)     fechaInput.value = '';
+      if (materialSelect) materialSelect.value = '';
+      if (loteInput)      loteInput.value = '';
+      renderTable(dataset);
+    };
+  }
 
-    // Delegación de evento para los botones "copiar referencia"
-    const tbody = document.getElementById('table-body');
-    if (tbody) {
-      tbody.addEventListener('click', async (e) => {
-        const btn = e.target.closest('button.copy-ref');
-        if (!btn) return;
-        const refVal = btn.dataset.ref || '';
-        try {
-          if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(refVal);
-          } else {
-            const ta = document.createElement('textarea');
-            ta.value = refVal;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
-            ta.focus();
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
-          }
-          const original = btn.textContent;
-          btn.textContent = 'Copiado!';
-          btn.disabled = true;
-          setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
-        } catch (err) {
-          alert('No se pudo copiar. Copia manual: ' + refVal);
+  const tbody = document.getElementById('table-body');
+  if (tbody && !tbody.__hasCopyListener) {
+    tbody.__hasCopyListener = true;
+    tbody.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button.copy-ref');
+      if (!btn) return;
+      const refVal = btn.dataset.ref || '';
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(refVal);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = refVal;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          document.execCommand('copy');
+          ta.remove();
         }
-      });
-    }
+        const original = btn.textContent;
+        btn.textContent = 'Copiado!';
+        btn.disabled = true;
+        setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1200);
+      } catch (err) {
+        alert('No se pudo copiar. Copia manual: ' + refVal);
+      }
+    });
   }
 }
 
@@ -213,6 +612,12 @@ function populateFilters() {
   const nombreSelect   = document.getElementById('filter-nombre');
   const materialSelect = document.getElementById('filter-material');
   if (!nombreSelect || !materialSelect) return;
+
+  const currentNombre = nombreSelect.value;
+  const currentMaterial = materialSelect.value;
+
+  nombreSelect.innerHTML = '<option value="">Todos</option>';
+  materialSelect.innerHTML = '<option value="">Todos</option>';
 
   const nombres = Array.from(
     new Set(dataset.map(r => r['Nombre 1']).filter(v => v != null && v !== ''))
@@ -226,6 +631,7 @@ function populateFilters() {
     const opt = document.createElement('option');
     opt.value = name;
     opt.textContent = name;
+    if (name === currentNombre) opt.selected = true;
     nombreSelect.appendChild(opt);
   });
 
@@ -233,12 +639,12 @@ function populateFilters() {
     const opt = document.createElement('option');
     opt.value = mat;
     opt.textContent = mat;
+    if (mat === currentMaterial) opt.selected = true;
     materialSelect.appendChild(opt);
   });
 }
 
-// -------------------- Renderizado (por lotes) --------------------
-// -------------------- Renderizado (por lotes + data-label para móvil) --------------------
+// -------------------- Renderizado (por lotes + data-label móvil) --------------------
 function renderTable(data) {
   const tbody = document.getElementById('table-body');
   if (!tbody) return;
@@ -255,7 +661,7 @@ function renderTable(data) {
     'Texto breve de material': 'Texto breve de material'
   };
 
-  const BATCH = 200; // pinta de 200 en 200 para no bloquear la UI
+  const BATCH = 200;
   let i = 0;
 
   function makeTd(label, text) {
@@ -278,7 +684,6 @@ function renderTable(data) {
       const tdFecha  = makeTd(LABELS['Fe.contabilización'], formatDateDisplay(row.__fechaISO || row['Fe.contabilización']));
       const tdLote   = makeTd(LABELS['Lote'], row['Lote']);
 
-      // Referencia + botón copiar
       const tdRef = document.createElement('td');
       tdRef.setAttribute('data-label', LABELS['Referencia']);
       const refVal = row['Referencia'] ?? '';
@@ -310,11 +715,10 @@ function renderTable(data) {
   updateRowCount(data.length);
 }
 
-
 // -------------------- Filtros --------------------
 function applyFilters() {
   const nombre   = document.getElementById('filter-nombre')?.value || '';
-  const fechaISO = document.getElementById('filter-fecha')?.value || ''; // input date -> ISO
+  const fechaISO = document.getElementById('filter-fecha')?.value || '';
   const material = document.getElementById('filter-material')?.value || '';
   const loteQ    = (document.getElementById('filter-lote')?.value || '').trim().toUpperCase();
 
@@ -342,37 +746,239 @@ function updateRowCount(count) {
   el.textContent = `Mostrando ${count} ${count === 1 ? 'registro' : 'registros'}.`;
 }
 
-/* --- Best-effort: bloquear menú contextual y atajos de inspección --- */
+// -------------------- Vistas y Navegación --------------------
+function switchView(viewName) {
+  const uploadSec = document.getElementById('upload-section');
+  const filtersSec = document.getElementById('filters');
+  const tableSec = document.getElementById('table-section');
+  const btnTable = document.getElementById('btn-view-table');
+  const btnUpload = document.getElementById('btn-view-upload');
+
+  if (viewName === 'upload') {
+    uploadSec.style.display = 'block';
+    filtersSec.style.display = 'none';
+    tableSec.style.display = 'none';
+    btnUpload.classList.add('active');
+    btnTable.classList.remove('active');
+  } else {
+    uploadSec.style.display = 'none';
+    filtersSec.style.display = 'grid';
+    tableSec.style.display = 'block';
+    btnTable.classList.add('active');
+    btnUpload.classList.remove('active');
+  }
+}
+
+// -------------------- Modal de Firebase --------------------
+function openFirebaseModal() {
+  const modal = document.getElementById('firebase-modal');
+  if (!modal) return;
+
+  const cfg = getActiveFirebaseConfig();
+  document.getElementById('cfg-db-type').value = cfg.dbType || 'rtdb';
+  document.getElementById('cfg-api-key').value = cfg.apiKey || '';
+  document.getElementById('cfg-project-id').value = cfg.projectId || '';
+  document.getElementById('cfg-database-url').value = cfg.databaseURL || '';
+  document.getElementById('cfg-auth-domain').value = cfg.authDomain || '';
+  document.getElementById('cfg-app-id').value = cfg.appId || '';
+
+  const resDiv = document.getElementById('test-connection-result');
+  if (resDiv) resDiv.style.display = 'none';
+
+  modal.style.display = 'flex';
+}
+
+function closeFirebaseModal() {
+  const modal = document.getElementById('firebase-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+// -------------------- Listeners de la Interfaz --------------------
+document.addEventListener('DOMContentLoaded', () => {
+  // 1) Carga inicial de datos
+  loadDataset();
+
+  // 2) Cambio de vistas en cabecera
+  document.getElementById('btn-view-table')?.addEventListener('click', () => switchView('table'));
+  document.getElementById('btn-view-upload')?.addEventListener('click', () => switchView('upload'));
+  document.getElementById('btn-open-config')?.addEventListener('click', openFirebaseModal);
+  document.getElementById('btn-close-modal')?.addEventListener('click', closeFirebaseModal);
+
+  // Cerrar modal al hacer clic en el fondo oscuro
+  document.getElementById('firebase-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'firebase-modal') closeFirebaseModal();
+  });
+
+  // 3) Pestañas del panel de carga (Pegar vs Archivo)
+  const tabPaste = document.getElementById('tab-btn-paste');
+  const tabFile = document.getElementById('tab-btn-file');
+  const boxPaste = document.getElementById('method-paste-box');
+  const boxFile = document.getElementById('method-file-box');
+
+  tabPaste?.addEventListener('click', () => {
+    tabPaste.classList.add('active');
+    tabFile.classList.remove('active');
+    boxPaste.classList.add('active');
+    boxFile.classList.remove('active');
+  });
+
+  tabFile?.addEventListener('click', () => {
+    tabFile.classList.add('active');
+    tabPaste.classList.remove('active');
+    boxFile.classList.add('active');
+    boxPaste.classList.remove('active');
+  });
+
+  // 4) Analizar texto pegado
+  document.getElementById('btn-parse-paste')?.addEventListener('click', () => {
+    const raw = document.getElementById('paste-input')?.value || '';
+    if (!raw.trim()) {
+      alert('Por favor pega primero las celdas de Excel en el recuadro de texto.');
+      return;
+    }
+    const parsed = parsePastedExcelText(raw);
+    showPreview(parsed);
+  });
+
+  document.getElementById('btn-clear-paste')?.addEventListener('click', () => {
+    const input = document.getElementById('paste-input');
+    if (input) input.value = '';
+    document.getElementById('preview-container').style.display = 'none';
+  });
+
+  // 5) Subida de archivo Excel
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('excel-file-input');
+  const fileNameTag = document.getElementById('selected-file-name');
+
+  dropZone?.addEventListener('click', () => fileInput?.click());
+
+  dropZone?.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-active');
+  });
+
+  dropZone?.addEventListener('dragleave', () => {
+    dropZone.classList.remove('drag-active');
+  });
+
+  dropZone?.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-active');
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFileSelected(e.dataTransfer.files[0]);
+    }
+  });
+
+  fileInput?.addEventListener('change', (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleFileSelected(e.target.files[0]);
+    }
+  });
+
+  function handleFileSelected(file) {
+    if (!file) return;
+    fileNameTag.textContent = `Archivo seleccionado: ${file.name} (${Math.round(file.size / 1024)} KB)`;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const ab = e.target.result;
+        const wb = XLSX.read(ab, { type: 'array' });
+        const parsed = parseExcelWorkbook(wb);
+        showPreview(parsed);
+      } catch (err) {
+        console.error('Error al procesar archivo Excel:', err);
+        alert('Error al leer el archivo Excel: ' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // 6) Botón Guardar en Firebase
+  document.getElementById('btn-save-firebase')?.addEventListener('click', handleSaveToFirebase);
+  document.getElementById('btn-cancel-preview')?.addEventListener('click', () => {
+    document.getElementById('preview-container').style.display = 'none';
+  });
+
+  // 7) Acciones del Modal Firebase
+  document.getElementById('btn-test-firebase')?.addEventListener('click', async () => {
+    const resDiv = document.getElementById('test-connection-result');
+    resDiv.style.display = 'block';
+    resDiv.className = 'test-result test-loading';
+    resDiv.textContent = 'Probando conexión con Firebase...';
+
+    const tempConfig = {
+      dbType: document.getElementById('cfg-db-type').value,
+      apiKey: document.getElementById('cfg-api-key').value.trim(),
+      projectId: document.getElementById('cfg-project-id').value.trim(),
+      databaseURL: document.getElementById('cfg-database-url').value.trim(),
+      authDomain: document.getElementById('cfg-auth-domain').value.trim(),
+      appId: document.getElementById('cfg-app-id').value.trim()
+    };
+
+    const res = await testFirebaseConnection(tempConfig);
+    if (res.success) {
+      resDiv.className = 'test-result test-success';
+      resDiv.textContent = `✅ ${res.message}`;
+    } else {
+      resDiv.className = 'test-result test-error';
+      resDiv.textContent = `❌ ${res.message}`;
+    }
+  });
+
+  document.getElementById('btn-save-firebase-config')?.addEventListener('click', async () => {
+    const newConfig = {
+      dbType: document.getElementById('cfg-db-type').value,
+      apiKey: document.getElementById('cfg-api-key').value.trim(),
+      projectId: document.getElementById('cfg-project-id').value.trim(),
+      databaseURL: document.getElementById('cfg-database-url').value.trim(),
+      authDomain: document.getElementById('cfg-auth-domain').value.trim(),
+      appId: document.getElementById('cfg-app-id').value.trim()
+    };
+
+    if (!newConfig.apiKey || !newConfig.projectId) {
+      alert('API Key y Project ID son obligatorios.');
+      return;
+    }
+
+    if (newConfig.dbType === 'rtdb' && !newConfig.databaseURL) {
+      newConfig.databaseURL = `https://${newConfig.projectId}-default-rtdb.firebaseio.com`;
+    }
+
+    await reinitFirebase(newConfig);
+    alert('¡Configuración de Firebase guardada correctamente!');
+    closeFirebaseModal();
+
+    loadDataset();
+  });
+});
+
+/* --- Protección UI: permite interactuar y copiar/pegar normalmente en inputs y textareas --- */
 (function hardenUI() {
-  // Deshabilitar clic derecho / menú contextual
-  const blockContext = (e) => e.preventDefault();
+  const blockContext = (e) => {
+    const targetTag = (e.target.tagName || '').toLowerCase();
+    if (targetTag === 'textarea' || targetTag === 'input') {
+      return; // permitir menú contextual para pegar/copiar en inputs y textareas
+    }
+    e.preventDefault();
+  };
   document.addEventListener('contextmenu', blockContext, { capture: true });
 
-  // Bloquear atajos comunes de DevTools y ver código fuente
   const blockKeys = (e) => {
     const k = (e.key || '').toLowerCase();
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     const ctrlOrCmd = isMac ? e.metaKey : e.ctrlKey;
 
-    // F12
-    if (e.keyCode === 123) {
+    if (e.keyCode === 123) { // F12
       e.preventDefault(); e.stopPropagation(); return;
     }
-    // Ctrl/Cmd + Shift + (I | J | C)
     if (ctrlOrCmd && e.shiftKey && ['i','j','c'].includes(k)) {
       e.preventDefault(); e.stopPropagation(); return;
     }
-    // Ctrl/Cmd + U (ver código fuente)
     if (ctrlOrCmd && k === 'u') {
       e.preventDefault(); e.stopPropagation(); return;
     }
   };
   document.addEventListener('keydown', blockKeys, { capture: true });
-
-  // Opcional: impedir arrastre de elementos (a veces abre menús)
-  document.addEventListener('dragstart', (e) => e.preventDefault(), { capture: true });
 })();
-
-
-// -------------------- Arranque --------------------
-document.addEventListener('DOMContentLoaded', loadDataset);

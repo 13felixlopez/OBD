@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gestión de datos OBD</title>
+  <!-- Hoja de estilos principal -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="header-brand">
+      <h1>Gestión de datos OBD</h1>
+      <span id="data-source-badge" class="badge-source" title="Origen de los datos mostrados">Cargando datos...</span>
+    </div>
+    <nav class="header-nav">
+      <button id="btn-view-table" class="nav-btn active" title="Ver tabla de datos">📊 Ver Registros</button>
+      <button id="btn-view-upload" class="nav-btn" title="Cargar o pegar datos de Excel">📤 Cargar / Pegar Excel</button>
+      <button id="btn-open-config" class="nav-btn btn-secondary" title="Configurar credenciales de Firebase">⚙️ Config Firebase</button>
+    </nav>
+  </header>
+
+  <!-- ================= SECCIÓN DE CARGA Y ACTUALIZACIÓN ================= -->
+  <section id="upload-section" class="upload-panel" style="display: none;">
+    <div class="upload-container">
+      <div class="upload-header">
+        <h2>📥 Actualizar datos OBD</h2>
+        <p class="subtitle">
+          Al guardar en Firebase, se <strong>borrarán los registros anteriores</strong> y se publicarán los nuevos automáticamente.
+        </p>
+      </div>
+
+      <!-- Selector de método: Pegar o Archivo -->
+      <div class="method-tabs">
+        <button id="tab-btn-paste" class="method-tab active">📋 Opción 1: Pegar desde Excel</button>
+        <button id="tab-btn-file" class="method-tab">📁 Opción 2: Subir archivo Excel (.xlsx)</button>
+      </div>
+
+      <!-- Método 1: Pegar celdas copiadas de Excel -->
+      <div id="method-paste-box" class="method-content active">
+        <div class="instructions-box">
+          <strong>¿Cómo usarlo?</strong>
+          <ol>
+            <li>Abre tu hoja de Excel o Google Sheet.</li>
+            <li>Selecciona y copia tus celdas con <code>Ctrl + C</code> (puedes incluir o no los encabezados).</li>
+            <li>Haz clic en el recuadro inferior y pega con <code>Ctrl + V</code>.</li>
+            <li>Pulsa <strong>"Analizar datos pegados"</strong> para previsualizar.</li>
+          </ol>
+          <small class="col-guide">Columnas esperadas: Centro | Nombre 1 (Acopio) | Fe.contabilización | Lote | Referencia | Cantidad | Texto breve de material</small>
+        </div>
+
+        <textarea id="paste-input" class="paste-textarea" rows="8" placeholder="Pega aquí las celdas copiadas de tu Excel (Ctrl + V)...&#10;Ejemplo:&#10;1000	Acopio Centro	15/08/2026	LOTE123	REF-4500	120	Material Ejemplo"></textarea>
+
+        <div class="upload-actions">
+          <button id="btn-parse-paste" class="action-btn primary">🔍 Analizar datos pegados</button>
+          <button id="btn-clear-paste" class="action-btn secondary">Limpiar texto</button>
+        </div>
+      </div>
+
+      <!-- Método 2: Subir archivo Excel -->
+      <div id="method-file-box" class="method-content">
+        <div class="instructions-box">
+          <strong>Subir archivo:</strong>
+          <p>Selecciona o arrastra tu archivo <code>.xlsx</code>, <code>.xls</code> o <code>.csv</code> con el formato de columnas de la web.</p>
+        </div>
+
+        <div id="drop-zone" class="drop-zone">
+          <input type="file" id="excel-file-input" accept=".xlsx, .xls, .csv" style="display: none;" />
+          <div class="drop-content">
+            <span class="drop-icon">📊</span>
+            <p><strong>Haz clic aquí para seleccionar tu archivo Excel</strong> o arrástralo hasta esta zona</p>
+            <span id="selected-file-name" class="file-name-tag"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Previsualización de los datos parseados -->
+      <div id="preview-container" class="preview-card" style="display: none;">
+        <div class="preview-header">
+          <h3>Previsualización de datos procesados</h3>
+          <span id="preview-count" class="preview-count-badge">0 registros</span>
+        </div>
+
+        <div id="preview-alert" class="alert-box" style="display: none;"></div>
+
+        <div class="preview-table-wrapper">
+          <table id="preview-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Centro</th>
+                <th>Nombre 1</th>
+                <th>Fe.contabilización</th>
+                <th>Lote</th>
+                <th>Referencia</th>
+                <th>Cantidad</th>
+                <th>Texto breve de material</th>
+              </tr>
+            </thead>
+            <tbody id="preview-table-body"></tbody>
+          </table>
+        </div>
+        <p id="preview-note" class="preview-note"></p>
+
+        <!-- Acciones finales de guardado -->
+        <div class="save-bar">
+          <button id="btn-save-firebase" class="action-btn danger">
+            🗑️ Borrar anteriores y Guardar en Firebase
+          </button>
+          <button id="btn-cancel-preview" class="action-btn secondary">Cancelar</button>
+        </div>
+
+        <div id="save-status" class="save-status-msg" style="display: none;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SECCIÓN DE FILTROS ================= -->
+  <section id="filters">
+    <!-- Filtro por Acopio (Nombre 1) -->
+    <div class="filter">
+      <label for="filter-nombre">Acopio (Nombre&nbsp;1):</label>
+      <select id="filter-nombre">
+        <option value="">Todos</option>
+      </select>
+    </div>
+    <!-- Filtro por Lote -->
+    <div class="filter">
+      <label for="filter-lote">Lote:</label>
+      <input type="text" id="filter-lote" placeholder="Escriba el lote" style="text-transform:uppercase;" />
+    </div>
+    <!-- Filtro por Tipo de material -->
+    <div class="filter">
+      <label for="filter-material">Tipo de material:</label>
+      <select id="filter-material">
+        <option value="">Todos</option>
+      </select>
+    </div>
+    <!-- Filtro por Fecha de contabilización -->
+    <div class="filter">
+      <label for="filter-fecha">Fecha (Fe.contabilización):</label>
+      <input type="date" id="filter-fecha">
+    </div>
+    <!-- Botón para limpiar todos los filtros -->
+    <div class="filter">
+      <button id="clear-filters">Limpiar filtros</button>
+    </div>
+  </section>
+
+  <!-- ================= SECCIÓN DE TABLA ================= -->
+  <section id="table-section">
+    <!-- Contador de filas en la parte superior de la tabla -->
+    <div class="table-toolbar">
+      <p id="row-count" class="row-count"></p>
+      <span id="last-sync-time" class="last-sync-time"></span>
+    </div>
+
+    <table id="data-table">
+      <thead>
+        <tr>
+          <th>Centro</th>
+          <th>Nombre&nbsp;1</th>
+          <th>Fe.contabilización</th>
+          <th>Lote</th>
+          <th>Referencia</th>
+          <th>Cantidad</th>
+          <th>Texto breve de material</th>
+        </tr>
+      </thead>
+      <tbody id="table-body">
+        <!-- Las filas se generan dinámicamente con JavaScript -->
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ================= MODAL CONFIGURACIÓN FIREBASE ================= -->
+  <div id="firebase-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>⚙️ Configuración de Firebase</h3>
+        <button id="btn-close-modal" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Para almacenar datos sin que Zscaler los bloquee, se utiliza Firebase (Google Cloud). Puedes configurar Firebase Realtime Database (recomendado) o Cloud Firestore.
+        </p>
+
+        <div class="form-group">
+          <label for="cfg-db-type">Servicio de Base de Datos:</label>
+          <select id="cfg-db-type">
+            <option value="rtdb">Firebase Realtime Database (Recomendado)</option>
+            <option value="firestore">Cloud Firestore</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="cfg-api-key">API Key (apiKey): *</label>
+          <input type="text" id="cfg-api-key" placeholder="AIzaSy..." />
+        </div>
+
+        <div class="form-group">
+          <label for="cfg-project-id">Project ID: *</label>
+          <input type="text" id="cfg-project-id" placeholder="mi-proyecto-obd" />
+        </div>
+
+        <div class="form-group" id="group-database-url">
+          <label for="cfg-database-url">Database URL (solo para Realtime Database):</label>
+          <input type="text" id="cfg-database-url" placeholder="https://mi-proyecto-obd-default-rtdb.firebaseio.com" />
+          <small>Si lo dejas vacío, se autocompleta con tu Project ID.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="cfg-auth-domain">Auth Domain (opcional):</label>
+          <input type="text" id="cfg-auth-domain" placeholder="mi-proyecto-obd.firebaseapp.com" />
+        </div>
+
+        <div class="form-group">
+          <label for="cfg-app-id">App ID (opcional):</label>
+          <input type="text" id="cfg-app-id" placeholder="1:123456789:web:abcdef..." />
+        </div>
+
+        <div id="test-connection-result" class="test-result" style="display: none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-test-firebase" class="action-btn secondary">🔌 Probar Conexión</button>
+        <button id="btn-save-firebase-config" class="action-btn primary">💾 Guardar Configuración</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Librería SheetJS para procesar archivos Excel en el navegador -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+  <!-- SDKs de Firebase (compat v10) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+  <!-- Configuración y conexión Firebase -->
+  <script src="firebase-config.js"></script>
+
+  <!-- Script principal de la aplicación -->
+  <script src="script.js"></script>
+</body>
+</html>
