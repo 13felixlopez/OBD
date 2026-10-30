@@ -3,7 +3,7 @@
  * Permite instalación en dispositivos móviles / escritorio y funcionamiento offline.
  */
 
-const CACHE_NAME = 'obd-pwa-cache-v2';
+const CACHE_NAME = 'obd-pwa-cache-v5';
 
 const STATIC_ASSETS = [
   './',
@@ -49,14 +49,55 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Intercepción de peticiones con estrategia Network First (red primero, fallback a caché si no hay internet)
+// Escuchar mensajes para forzar purga total de caché a petición del cliente
+self.addEventListener('message', (event) => {
+  if (event.data && (event.data.action === 'clean-cache' || event.data.action === 'skipWaiting')) {
+    if (event.data.action === 'skipWaiting') {
+      self.skipWaiting();
+    }
+    if (event.data.action === 'clean-cache') {
+      event.waitUntil(
+        caches.keys().then((keys) => {
+          return Promise.all(keys.map((key) => caches.delete(key)));
+        }).then(() => {
+          if (event.ports && event.ports[0]) {
+            event.ports[0].postMessage({ success: true });
+          }
+        })
+      );
+    }
+  }
+});
+
+// Intercepción de peticiones con estrategia Network First para estáticos,
+// y Network-Only para datos dinámicos (Firebase, Excel, Google Sheets, peticiones con timestamp ?t=)
 self.addEventListener('fetch', (event) => {
   const req = event.request;
+  const url = new URL(req.url);
 
+  // Comprobar si es petición de datos dinámicos que NUNCA debe ser cacheada con datos obsoletos
+  const isDynamicData = 
+    url.hostname.includes('firebaseio.com') ||
+    url.hostname.includes('googleapis.com') ||
+    url.hostname.includes('docs.google.com') ||
+    url.pathname.endsWith('.xlsx') ||
+    url.searchParams.has('t');
+
+  if (isDynamicData) {
+    // Para datos dinámicos: siempre ir directamente a la red sin almacenar copia estática
+    event.respondWith(
+      fetch(req).catch(() => {
+        // En caso de corte total de conexión offline, intenta responder con caché si existe
+        return caches.match(req);
+      })
+    );
+    return;
+  }
+
+  // Para assets estáticos: Network First con fallback a caché
   event.respondWith(
     fetch(req)
       .then((networkRes) => {
-        // Si responde la red correctamente y es GET, actualizamos la copia en caché
         if (networkRes && networkRes.status === 200 && req.method === 'GET') {
           const resClone = networkRes.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
@@ -64,7 +105,6 @@ self.addEventListener('fetch', (event) => {
         return networkRes;
       })
       .catch(() => {
-        // Si no hay red (offline), responder con lo que haya en caché
         return caches.match(req).then((cachedRes) => {
           if (cachedRes) return cachedRes;
           if (req.mode === 'navigate') {

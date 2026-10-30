@@ -13,16 +13,17 @@
   <link rel="apple-touch-icon" href="obd-logo.jpg">
   <link rel="icon" type="image/jpeg" href="obd-logo.jpg">
   <!-- Hoja de estilos principal -->
-  <link rel="stylesheet" href="style.css?v=3.2">
+  <link rel="stylesheet" href="style.css?v=3.5">
 </head>
 <body>
   <header>
     <div class="header-brand">
       <img src="obd-logo.jpg" alt="Logo OBD" class="header-logo" />
       <h1>Gestión de datos OBD</h1>
-      <span id="data-source-badge" class="badge-source" title="Origen de los datos mostrados">Cargando datos...</span>
+      <span id="data-source-badge" class="badge-source" title="Origen de los datos mostrados. Haz clic para recargar.">Cargando datos...</span>
     </div>
     <nav class="header-nav">
+      <button id="btn-refresh-data" class="nav-btn btn-refresh" title="Limpiar caché y recargar datos más recientes"><span class="refresh-icon">🔄</span> <span class="refresh-text">Actualizar</span></button>
       <button id="btn-install-pwa" class="nav-btn btn-install" style="display: none;" title="Instalar como aplicación en este dispositivo">📲 Instalar App</button>
       <button id="btn-view-table" class="nav-btn active" title="Ver tabla de datos">📊 Ver Registros</button>
       <button id="btn-view-upload" class="nav-btn" title="Cargar o pegar datos de Excel">📤 Cargar / Pegar Excel</button>
@@ -130,17 +131,27 @@
     <div class="search-container">
       <div class="search-box">
         <span class="search-icon">🔍</span>
-        <input type="text" id="global-search" placeholder="Búsqueda rápida en todo (Lote, Referencia, Acopio, Material, Centro)..." autocomplete="off" />
+        <input type="text" id="global-search" placeholder="Búsqueda rápida (Lote, Referencia, Acopio, Cantidad, Material, Centro)..." autocomplete="off" />
         <button id="clear-search" class="clear-search-btn" title="Limpiar búsqueda" style="display: none;">&times;</button>
       </div>
       <button id="btn-toggle-filters" class="toggle-filters-btn" title="Alternar filtros específicos">
         <span>Filtros específicos</span> <span id="filters-toggle-icon">▼</span>
       </button>
     </div>
+    <div class="search-hint">
+      <span>💡 Puedes buscar cantidades con o sin comas (ej: <code>1500</code> o <code>1,500</code>), referencias o materiales sin importar tildes o mayúsculas.</span>
+    </div>
   </section>
 
   <!-- ================= SECCIÓN DE FILTROS ESPECÍFICOS ================= -->
   <section id="filters" class="filters-collapsed">
+    <!-- Filtro por Centro -->
+    <div class="filter">
+      <label for="filter-centro">Centro:</label>
+      <select id="filter-centro">
+        <option value="">Todos</option>
+      </select>
+    </div>
     <!-- Filtro por Acopio (Nombre 1) -->
     <div class="filter">
       <label for="filter-nombre">Acopio (Nombre&nbsp;1):</label>
@@ -173,22 +184,28 @@
 
   <!-- ================= SECCIÓN DE TABLA ================= -->
   <section id="table-section">
-    <!-- Contador de filas en la parte superior de la tabla -->
+    <!-- Contador de filas, totalizadores y acciones -->
     <div class="table-toolbar">
-      <p id="row-count" class="row-count"></p>
-      <span id="last-sync-time" class="last-sync-time"></span>
+      <div class="toolbar-info">
+        <p id="row-count" class="row-count"></p>
+        <span id="total-cantidad-badge" class="badge-total-cant" style="display: none;"></span>
+      </div>
+      <div class="toolbar-actions">
+        <button id="btn-export-excel" class="btn-export-excel" title="Exportar registros filtrados a Excel (.xlsx)">📥 Exportar a Excel</button>
+        <span id="last-sync-time" class="last-sync-time"></span>
+      </div>
     </div>
 
     <table id="data-table">
       <thead>
         <tr>
-          <th>Centro</th>
-          <th>Nombre&nbsp;1</th>
-          <th>Fe.contabilización</th>
-          <th>Lote</th>
-          <th>Referencia</th>
-          <th>Cantidad</th>
-          <th>Texto breve de material</th>
+          <th data-col="Centro" class="sortable" title="Clic para ordenar">Centro <span class="sort-icon">⇅</span></th>
+          <th data-col="Nombre 1" class="sortable" title="Clic para ordenar">Nombre&nbsp;1 <span class="sort-icon">⇅</span></th>
+          <th data-col="Fe.contabilización" class="sortable" title="Clic para ordenar">Fe.contabilización <span class="sort-icon">⇅</span></th>
+          <th data-col="Lote" class="sortable" title="Clic para ordenar">Lote <span class="sort-icon">⇅</span></th>
+          <th data-col="Referencia" class="sortable" title="Clic para ordenar">Referencia <span class="sort-icon">⇅</span></th>
+          <th data-col="Cantidad" class="sortable col-num" title="Clic para ordenar">Cantidad <span class="sort-icon">⇅</span></th>
+          <th data-col="Texto breve de material" class="sortable" title="Clic para ordenar">Texto breve de material <span class="sort-icon">⇅</span></th>
         </tr>
       </thead>
       <tbody id="table-body">
@@ -276,6 +293,9 @@
     </div>
   </div>
 
+  <!-- Toast flotante de notificaciones -->
+  <div id="toast-notification" class="toast-notification" style="display: none;"></div>
+
   <!-- Librería SheetJS para procesar archivos Excel en el navegador -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
@@ -285,9 +305,9 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 
   <!-- Configuración y conexión Firebase -->
-  <script src="firebase-config.js?v=3.0"></script>
+  <script src="firebase-config.js?v=3.5"></script>
 
   <!-- Script principal de la aplicación -->
-  <script src="script.js?v=3.0"></script>
+  <script src="script.js?v=3.5"></script>
 </body>
 </html>

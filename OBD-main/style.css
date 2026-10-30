@@ -83,12 +83,66 @@ header h1 {
   color: #fff;
   display: inline-flex;
   align-items: center;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+.badge-source:hover {
+  transform: scale(1.03);
+  opacity: 0.95;
 }
 .badge-source.badge-firebase { background: #e6f4ea; color: #137333; }
 .badge-source.badge-sheets { background: #fef7e0; color: #b06000; }
 .badge-source.badge-local { background: #f1f3f4; color: #3c4043; }
 .badge-source.badge-loading { background: rgba(255,255,255,0.25); color: #fff; }
 .badge-source.badge-empty { background: #fce8e6; color: #c5221f; }
+
+.btn-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+.btn-refresh:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+.btn-refresh:active {
+  transform: scale(0.97);
+}
+.btn-refresh.spinning .refresh-icon {
+  animation: spin 0.75s linear infinite;
+  display: inline-block;
+}
+@keyframes spin {
+  100% { transform: rotate(360deg); }
+}
+
+/* Toast flotante para avisos de actualización */
+.toast-notification {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: #1e293b;
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 10px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+  font-size: 13.5px;
+  font-weight: 500;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+.toast-notification.show {
+  opacity: 1;
+  transform: translateY(0);
+}
 
 .header-nav {
   display: flex;
@@ -634,6 +688,26 @@ header h1 {
   border-color: #bae6fd;
 }
 
+.search-hint {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 8px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.4;
+}
+
+.search-hint code {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+  color: var(--brand);
+}
+
 .btn-install {
   background: #10b981 !important;
   border-color: #059669 !important;
@@ -707,14 +781,65 @@ header h1 {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.toolbar-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 #row-count {
   margin: 0;
-  font-size: 13px;
-  color: var(--muted);
+  font-size: 13.5px;
+  color: #334155;
   font-weight: 600;
+}
+
+.badge-total-cant {
+  display: inline-flex;
+  align-items: center;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #bae6fd;
+}
+
+.btn-export-excel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #107c41;
+  color: #ffffff;
+  border: none;
+  padding: 7px 14px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.btn-export-excel:hover {
+  background: #0b5c30;
+}
+
+.btn-export-excel:active {
+  transform: scale(0.98);
 }
 
 .last-sync-time {
@@ -737,6 +862,42 @@ header h1 {
   border: 1px solid var(--brand);
   font-weight: 600;
 }
+
+#data-table thead th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease;
+  white-space: nowrap;
+}
+
+#data-table thead th.sortable:hover {
+  background: #0056b3;
+}
+
+#data-table thead th.sort-asc,
+#data-table thead th.sort-desc {
+  background: #004494;
+}
+
+.sort-icon {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+#data-table thead th.sortable:hover .sort-icon,
+#data-table thead th.sort-asc .sort-icon,
+#data-table thead th.sort-desc .sort-icon {
+  opacity: 1;
+}
+
+#data-table th.col-num,
+#data-table td.col-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 #data-table td {
   padding: 9px 12px;
   border: 1px solid var(--border);
@@ -747,6 +908,15 @@ header h1 {
 }
 #data-table tbody tr:hover td {
   background: #edf5ff;
+}
+
+/* Resaltado de coincidencias de búsqueda */
+mark.search-match {
+  background-color: #fef08a;
+  color: #854d0e;
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-weight: 700;
 }
 
 /* Botón copiar referencia */
@@ -775,13 +945,43 @@ header h1 {
     justify-content: space-between;
   }
   .header-nav {
+    display: flex;
     justify-content: flex-start;
+    gap: 8px;
+    width: 100%;
   }
 
-  /* Ocultar opciones de administración y carga en móvil */
+  /* Ocultar opciones de administración, carga, sugerencias y totales no requeridos en móvil */
   #btn-view-upload,
-  #btn-open-config {
+  #btn-open-config,
+  #btn-view-table,
+  .search-hint,
+  #btn-export-excel,
+  .btn-export-excel,
+  #total-cantidad-badge,
+  .badge-total-cant {
     display: none !important;
+  }
+
+  .btn-refresh {
+    flex: 1;
+    justify-content: center;
+    padding: 9px 14px;
+    font-size: 13.5px;
+  }
+
+  .btn-install {
+    flex: 1;
+    justify-content: center;
+    padding: 9px 14px;
+  }
+
+  .toast-notification {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    justify-content: center;
+    font-size: 13px;
   }
 
   .search-container {
@@ -821,7 +1021,17 @@ header h1 {
   .table-toolbar {
     margin-bottom: 12px;
     padding: 0 4px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
   }
+
+  .toolbar-info,
+  .toolbar-actions {
+    justify-content: space-between;
+    width: 100%;
+  }
+
 
   /* Ocultar cabecera de tabla y transformar cada fila en una tarjeta independiente */
   #data-table thead {

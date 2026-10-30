@@ -16,12 +16,16 @@
 // -------------------- Estado Global --------------------
 let dataset = [];
 let pendingUploadRecords = [];
+let currentFilteredData = [];
+let currentSortColumn = null;
+let currentSortDirection = 'asc';
+let activeSearchTerms = [];
 
 // ID del documento y GID de Google Sheets (usado como respaldo si Firebase no está activo)
 const GOOGLE_SHEET_ID  = '1rfE4dFe5cHtQMIc4mt-Lx-QmdVjMsKcR';
 const GOOGLE_SHEET_GID = '0';
 
-// -------------------- Utilidades de Formato y Fecha --------------------
+// -------------------- Utilidades de Formato, Texto y Búsqueda --------------------
 function escapeHtml(str) {
   return String(str)
     .replaceAll('&', '&amp;')
@@ -29,6 +33,113 @@ function escapeHtml(str) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+/**
+ * Normaliza un texto para búsqueda:
+ * - Insensible a acentos/diacríticos (Café -> cafe, Azúcar -> azucar)
+ * - En minúsculas y sin espacios residuales
+ */
+function normalizeSearchText(str) {
+  if (str == null) return '';
+  return String(str)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Parsea un valor numérico tolerando separadores de miles y decimales comunes:
+ * ejemplos: "1,500", "1,500.00", "1.500,00", "1500", "-250.50"
+ */
+function parseNumericValue(val) {
+  if (val == null || val === '') return null;
+  const s = String(val).trim().replace(/\s+/g, '');
+  let clean = s;
+  if (/^[\-\+]?[\d,]+(\.\d+)?$/.test(clean) && clean.includes(',')) {
+    clean = clean.replace(/,/g, '');
+  } else if (/^[\-\+]?[\d\.]+(,\d+)?$/.test(clean) && clean.includes('.')) {
+    clean = clean.replace(/\./g, '').replace(',', '.');
+  } else if (/^[\-\+]?\d+(,\d+)?$/.test(clean)) {
+    clean = clean.replace(',', '.');
+  }
+  const n = parseFloat(clean);
+  return isNaN(n) ? null : n;
+}
+
+/**
+ * Genera variantes alternativas para permitir que una cantidad pueda encontrarse
+ * escribiendo con comas ("1,500"), con puntos ("1.500"), entero directo ("1500"), etc.
+ */
+function getNumericSearchAliases(val) {
+  const aliases = new Set();
+  if (val == null || val === '') return [];
+  const rawStr = String(val).trim();
+  const num = parseNumericValue(rawStr);
+  if (num !== null) {
+    const absNum = Math.abs(num);
+    const intPart = Math.floor(absNum).toString();
+    const fixed2 = absNum.toFixed(2);
+    
+    aliases.add(String(absNum));
+    aliases.add(intPart);
+    aliases.add(fixed2);
+    aliases.add(fixed2.replace('.', ','));
+
+    const enThousands = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const esThousands = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    aliases.add(enThousands);
+    aliases.add(esThousands);
+
+    const decPart = fixed2.split('.')[1];
+    aliases.add(enThousands + '.' + decPart);
+    aliases.add(esThousands + ',' + decPart);
+  }
+  return Array.from(aliases);
+}
+
+/**
+ * Construye una expresión regular tolerante a acentos para resaltar coincidencias
+ */
+function makeDiacriticRegexPattern(term) {
+  const norm = normalizeSearchText(term);
+  const escaped = norm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return escaped
+    .replace(/a/g, '[aáàäâAÁÀÄÂ]')
+    .replace(/e/g, '[eéèëêEÉÈËÊ]')
+    .replace(/i/g, '[iíìïîIÍÌÏÎ]')
+    .replace(/o/g, '[oóòöôOÓÒÖÔ]')
+    .replace(/u/g, '[uúùüûUÚÙÜÛ]')
+    .replace(/n/g, '[nñNÑ]');
+}
+
+/**
+ * Resalta en amarillo las coincidencias encontradas dentro de una celda
+ */
+function highlightMatches(text, terms) {
+  if (!text) return '';
+  const str = String(text);
+  if (!terms || terms.length === 0) return escapeHtml(str);
+
+  const patterns = [];
+  for (const t of terms) {
+    if (!t || t.length < 1) continue;
+    patterns.push(makeDiacriticRegexPattern(t));
+    const stripped = t.replace(/[,\.]/g, '');
+    if (stripped && stripped !== t && stripped.length >= 2) {
+      patterns.push(makeDiacriticRegexPattern(stripped));
+    }
+  }
+
+  if (patterns.length === 0) return escapeHtml(str);
+
+  try {
+    const regex = new RegExp(`(${patterns.join('|')})`, 'gi');
+    return escapeHtml(str).replace(regex, '<mark class="search-match">$1</mark>');
+  } catch (e) {
+    return escapeHtml(str);
+  }
 }
 
 /**
@@ -98,16 +209,18 @@ function debounce(fn, wait = 150) {
 }
 
 /**
- * Prepara campos auxiliares en el dataset para agilizar los filtros.
+ * Prepara campos auxiliares en el dataset para agilizar los filtros y búsquedas inteligentes.
  */
 function prepareDataset() {
   dataset = dataset.map(row => {
     const rawFecha = row['Fe.contabilización'] || row['Fe_contabilización'] || row['Fe_contabilizacion'] || '';
     const fechaISO = toISODate(rawFecha);
     const loteRaw  = row['Lote'] ?? '';
+    const cantVal  = parseNumericValue(row['Cantidad']);
 
-    // Índice de búsqueda global que agrupa todas las columnas
-    const searchCorpus = [
+    // Construcción del corpus de búsqueda enriquecido:
+    // Incluye campos base, variantes numéricas (con y sin comas/puntos) y sin tildes.
+    const baseFields = [
       row['Centro'],
       row['Nombre 1'],
       rawFecha,
@@ -115,20 +228,125 @@ function prepareDataset() {
       row['Referencia'],
       row['Cantidad'],
       row['Texto breve de material']
-    ].filter(Boolean).join(' ').toLowerCase();
+    ];
+    const numAliases = getNumericSearchAliases(row['Cantidad']);
+    const corpusText = [...baseFields, ...numAliases].filter(Boolean).join(' ');
+    const searchCorpus = normalizeSearchText(corpusText);
 
     return {
       ...row,
       'Fe.contabilización': rawFecha,
       __fechaISO: fechaISO,
-      __loteUC: String(loteRaw).toUpperCase(),
-      __searchCorpus: searchCorpus
+      __loteUC: normalizeSearchText(loteRaw).toUpperCase(),
+      __searchCorpus: searchCorpus,
+      __numericCantidad: cantVal
     };
   });
 }
 
-// -------------------- Carga de Datos Principal --------------------
-async function loadDataset() {
+// -------------------- Carga de Datos Principal y Gestión de Caché --------------------
+let currentDatasetUpdatedAt = null;
+
+/**
+ * Notificación emergente flotante en pantalla
+ */
+function showToast(message, duration = 3200) {
+  const toast = document.getElementById('toast-notification');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.style.display = 'flex';
+  void toast.offsetWidth; // Forzar reflujo para transición CSS
+  toast.classList.add('show');
+
+  if (toast.__timer) clearTimeout(toast.__timer);
+  toast.__timer = setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => {
+      if (!toast.classList.contains('show')) toast.style.display = 'none';
+    }, 300);
+  }, duration);
+}
+
+/**
+ * Limpia totalmente la caché del navegador / Service Worker y recarga los datos frescos
+ */
+async function purgeAppCacheAndRefresh(userInitiated = true) {
+  const btnRefresh = document.getElementById('btn-refresh-data');
+  if (btnRefresh) {
+    btnRefresh.classList.add('spinning');
+    btnRefresh.disabled = true;
+  }
+  if (userInitiated) {
+    setSourceBadge('🔄 Limpiando caché y recargando...', 'loading');
+  }
+
+  try {
+    // 1. Limpiar toda la CacheStorage de la PWA
+    if ('caches' in window) {
+      try {
+        const cacheKeys = await caches.keys();
+        await Promise.all(cacheKeys.map(k => caches.delete(k)));
+      } catch (e) {
+        console.warn('Aviso limpiando CacheStorage:', e);
+      }
+    }
+
+    // 2. Notificar al Service Worker para purga forzada y actualización
+    if ('serviceWorker' in navigator) {
+      try {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (const reg of registrations) {
+          await reg.update();
+          if (reg.active) {
+            reg.active.postMessage({ action: 'clean-cache' });
+          }
+        }
+      } catch (e) {
+        console.warn('Aviso actualizando Service Worker:', e);
+      }
+    }
+
+    // 3. Recargar datos con bypass total de caché de red
+    await loadDataset(true);
+
+    if (userInitiated) {
+      showToast('✅ Caché eliminada. Datos actualizados con éxito.');
+    }
+  } catch (err) {
+    console.error('Error al actualizar datos y caché:', err);
+    if (userInitiated) {
+      showToast('⚠️ Actualizado con avisos: ' + (err.message || err));
+    }
+  } finally {
+    if (btnRefresh) {
+      setTimeout(() => {
+        btnRefresh.classList.remove('spinning');
+        btnRefresh.disabled = false;
+      }, 500);
+    }
+  }
+}
+
+/**
+ * Comprobación ultraligera en segundo plano para actualizar si se detectan datos nuevos
+ */
+async function checkBackgroundUpdates() {
+  if (typeof checkRemoteFirebaseMetadata !== 'function') return;
+  try {
+    const meta = await checkRemoteFirebaseMetadata();
+    if (meta && meta.updatedAt && currentDatasetUpdatedAt) {
+      if (meta.updatedAt !== currentDatasetUpdatedAt) {
+        console.log('Detectada nueva versión remota:', meta.updatedAt);
+        await purgeAppCacheAndRefresh(false);
+        showToast('🔄 Se han sincronizado los datos más recientes automáticamente');
+      }
+    }
+  } catch (e) {
+    // Silencioso en background
+  }
+}
+
+async function loadDataset(forceFresh = false) {
   setSourceBadge('Cargando...', 'loading');
 
   // 1) Intentar leer desde Firebase (primera prioridad)
@@ -137,6 +355,7 @@ async function loadDataset() {
       const fbResult = await loadFromFirebase();
       if (fbResult && Array.isArray(fbResult.records) && fbResult.records.length > 0) {
         dataset = fbResult.records;
+        currentDatasetUpdatedAt = fbResult.meta?.updatedAt || null;
         prepareDataset();
         initPage();
         
@@ -154,11 +373,11 @@ async function loadDataset() {
     }
   }
 
-  // 2) Intentar Google Sheets (gviz JSON)
+  // 2) Intentar Google Sheets (gviz JSON con cache-busting)
   if (GOOGLE_SHEET_ID) {
     try {
       const gvizUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq?gid=${GOOGLE_SHEET_GID}&tqx=out:json&t=${Date.now()}`;
-      const res = await fetch(gvizUrl);
+      const res = await fetch(gvizUrl, { cache: 'no-store' });
       if (res.ok) {
         const text = await res.text();
         const jsonStr = text.substring(text.indexOf('{'), text.lastIndexOf('}') + 1);
@@ -178,6 +397,7 @@ async function loadDataset() {
         });
 
         if (dataset.length > 0) {
+          currentDatasetUpdatedAt = new Date().toISOString();
           prepareDataset();
           initPage();
           setSourceBadge(`🟡 Google Sheets: ${dataset.length} registros`, 'sheets');
@@ -189,15 +409,19 @@ async function loadDataset() {
     }
   }
 
-  // 3) Fallback: archivo Excel local (OBD.xlsx)
+  // 3) Fallback: archivo Excel local (OBD.xlsx) con bypass estricto de caché
   try {
-    const res = await fetch('OBD.xlsx');
+    const res = await fetch(`OBD.xlsx?t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache' }
+    });
     if (res.ok) {
       const ab  = await res.arrayBuffer();
       const wb  = XLSX.read(ab, { type: 'array' });
       const sh  = wb.SheetNames[0];
       dataset   = XLSX.utils.sheet_to_json(wb.Sheets[sh], { defval: '' });
 
+      currentDatasetUpdatedAt = new Date().toISOString();
       prepareDataset();
       initPage();
       setSourceBadge(`⚪ Excel Local: ${dataset.length} registros`, 'local');
@@ -562,16 +786,19 @@ async function handleSaveToFirebase() {
 // -------------------- Inicialización UI de Filtros y Tabla --------------------
 function initPage() {
   populateFilters();
-  renderTable(dataset);
+  applyFilters();
 
+  const centroSelect   = document.getElementById('filter-centro');
   const nombreSelect   = document.getElementById('filter-nombre');
   const fechaInput     = document.getElementById('filter-fecha');
   const materialSelect = document.getElementById('filter-material');
   const loteInput      = document.getElementById('filter-lote');
   const clearBtn       = document.getElementById('clear-filters');
+  const btnExport      = document.getElementById('btn-export-excel');
 
   const debouncedApply = debounce(applyFilters, 150);
 
+  if (centroSelect)   centroSelect.onchange = debouncedApply;
   if (nombreSelect)   nombreSelect.onchange = debouncedApply;
   if (fechaInput)     fechaInput.onchange = debouncedApply;
   if (materialSelect) materialSelect.onchange = debouncedApply;
@@ -581,14 +808,42 @@ function initPage() {
       debouncedApply();
     };
   }
+
+  // Ordenamiento interactivo por columnas
+  const headers = document.querySelectorAll('#data-table thead th.sortable');
+  headers.forEach(th => {
+    th.onclick = function () {
+      const col = this.dataset.col;
+      if (!col) return;
+      if (currentSortColumn === col) {
+        currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+      } else {
+        currentSortColumn = col;
+        currentSortDirection = 'asc';
+      }
+      updateSortHeaderIcons();
+      applyFilters();
+    };
+  });
+
+  // Exportar registros filtrados a Excel
+  if (btnExport) {
+    btnExport.onclick = exportToExcel;
+  }
+
   if (clearBtn) {
     clearBtn.onclick = function () {
+      if (centroSelect)   centroSelect.value = '';
       if (nombreSelect)   nombreSelect.value = '';
       if (fechaInput)     fechaInput.value = '';
       if (materialSelect) materialSelect.value = '';
       if (loteInput)      loteInput.value = '';
       const globalSearch = document.getElementById('global-search');
       if (globalSearch) globalSearch.value = '';
+      
+      currentSortColumn = null;
+      currentSortDirection = 'asc';
+      updateSortHeaderIcons();
       applyFilters();
     };
   }
@@ -625,44 +880,136 @@ function initPage() {
   }
 }
 
-function populateFilters() {
-  const nombreSelect   = document.getElementById('filter-nombre');
-  const materialSelect = document.getElementById('filter-material');
-  if (!nombreSelect || !materialSelect) return;
-
-  const currentNombre = nombreSelect.value;
-  const currentMaterial = materialSelect.value;
-
-  nombreSelect.innerHTML = '<option value="">Todos</option>';
-  materialSelect.innerHTML = '<option value="">Todos</option>';
-
-  const nombres = Array.from(
-    new Set(dataset.map(r => r['Nombre 1']).filter(v => v != null && v !== ''))
-  ).sort();
-
-  const materiales = Array.from(
-    new Set(dataset.map(r => r['Texto breve de material']).filter(v => v != null && v !== ''))
-  ).sort();
-
-  nombres.forEach(name => {
-    const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = name;
-    if (name === currentNombre) opt.selected = true;
-    nombreSelect.appendChild(opt);
-  });
-
-  materiales.forEach(mat => {
-    const opt = document.createElement('option');
-    opt.value = mat;
-    opt.textContent = mat;
-    if (mat === currentMaterial) opt.selected = true;
-    materialSelect.appendChild(opt);
+/**
+ * Actualiza los iconos indicadores de ordenamiento (▲, ▼, ⇅) en los encabezados
+ */
+function updateSortHeaderIcons() {
+  const headers = document.querySelectorAll('#data-table thead th.sortable');
+  headers.forEach(th => {
+    const col = th.dataset.col;
+    const icon = th.querySelector('.sort-icon');
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (col === currentSortColumn) {
+      th.classList.add(currentSortDirection === 'asc' ? 'sort-asc' : 'sort-desc');
+      if (icon) icon.textContent = currentSortDirection === 'asc' ? '▲' : '▼';
+    } else {
+      if (icon) icon.textContent = '⇅';
+    }
   });
 }
 
+function populateFilters() {
+  const centroSelect   = document.getElementById('filter-centro');
+  const nombreSelect   = document.getElementById('filter-nombre');
+  const materialSelect = document.getElementById('filter-material');
+
+  const currentCentro   = centroSelect?.value || '';
+  const currentNombre   = nombreSelect?.value || '';
+  const currentMaterial = materialSelect?.value || '';
+
+  if (centroSelect) {
+    centroSelect.innerHTML = '<option value="">Todos</option>';
+    const centros = Array.from(
+      new Set(dataset.map(r => r['Centro']).filter(v => v != null && v !== ''))
+    ).sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+    centros.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = c;
+      if (c === currentCentro) opt.selected = true;
+      centroSelect.appendChild(opt);
+    });
+  }
+
+  if (nombreSelect) {
+    nombreSelect.innerHTML = '<option value="">Todos</option>';
+    const nombres = Array.from(
+      new Set(dataset.map(r => r['Nombre 1']).filter(v => v != null && v !== ''))
+    ).sort((a, b) => String(a).localeCompare(String(b), 'es'));
+    nombres.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === currentNombre) opt.selected = true;
+      nombreSelect.appendChild(opt);
+    });
+  }
+
+  if (materialSelect) {
+    materialSelect.innerHTML = '<option value="">Todos</option>';
+    const materiales = Array.from(
+      new Set(dataset.map(r => r['Texto breve de material']).filter(v => v != null && v !== ''))
+    ).sort((a, b) => String(a).localeCompare(String(b), 'es'));
+    materiales.forEach(mat => {
+      const opt = document.createElement('option');
+      opt.value = mat;
+      opt.textContent = mat;
+      if (mat === currentMaterial) opt.selected = true;
+      materialSelect.appendChild(opt);
+    });
+  }
+}
+
+/**
+ * Calcula y muestra el total de la columna Cantidad para los registros filtrados
+ */
+function updateTotalMetrics(data) {
+  const badge = document.getElementById('total-cantidad-badge');
+  if (!badge) return;
+  if (!data || data.length === 0) {
+    badge.style.display = 'none';
+    return;
+  }
+  let sum = 0;
+  let countWithNum = 0;
+  for (const r of data) {
+    if (r.__numericCantidad != null && !isNaN(r.__numericCantidad)) {
+      sum += r.__numericCantidad;
+      countWithNum++;
+    }
+  }
+  if (countWithNum > 0) {
+    badge.style.display = 'inline-flex';
+    badge.textContent = `∑ Total Cantidad: ${sum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+/**
+ * Exporta los registros actualmente visibles/filtrados a un archivo Excel (.xlsx)
+ */
+function exportToExcel() {
+  if (!currentFilteredData || currentFilteredData.length === 0) {
+    alert('No hay registros para exportar con los filtros aplicados.');
+    return;
+  }
+  if (typeof XLSX === 'undefined') {
+    alert('La librería SheetJS (XLSX) no está disponible en este momento.');
+    return;
+  }
+
+  const exportRows = currentFilteredData.map(r => ({
+    'Centro': r['Centro'] || '',
+    'Nombre 1': r['Nombre 1'] || '',
+    'Fe.contabilización': formatDateDisplay(r.__fechaISO || r['Fe.contabilización']),
+    'Lote': r['Lote'] || '',
+    'Referencia': r['Referencia'] || '',
+    'Cantidad': r['Cantidad'] || '',
+    'Texto breve de material': r['Texto breve de material'] || ''
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(exportRows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Registros OBD');
+
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `OBD_Registros_${dateStr}.xlsx`);
+}
+
 // -------------------- Renderizado (por lotes + data-label móvil) --------------------
-function renderTable(data) {
+function renderTable(data, searchTerms = []) {
   const tbody = document.getElementById('table-body');
   if (!tbody) return;
 
@@ -681,10 +1028,11 @@ function renderTable(data) {
   const BATCH = 200;
   let i = 0;
 
-  function makeTd(label, text) {
+  function makeTd(label, text, isColNum = false) {
     const td = document.createElement('td');
     td.setAttribute('data-label', label);
-    td.textContent = text ?? '';
+    if (isColNum) td.classList.add('col-num');
+    td.innerHTML = highlightMatches(text, searchTerms);
     return td;
   }
 
@@ -705,7 +1053,7 @@ function renderTable(data) {
       tdRef.setAttribute('data-label', LABELS['Referencia']);
       const refVal = row['Referencia'] ?? '';
       const span   = document.createElement('span');
-      span.textContent = refVal;
+      span.innerHTML = highlightMatches(refVal, searchTerms);
       tdRef.appendChild(span);
       if (refVal) {
         const btn = document.createElement('button');
@@ -717,7 +1065,7 @@ function renderTable(data) {
         tdRef.appendChild(btn);
       }
 
-      const tdCant = makeTd(LABELS['Cantidad'], row['Cantidad']);
+      const tdCant = makeTd(LABELS['Cantidad'], row['Cantidad'], true);
       const tdMat  = makeTd(LABELS['Texto breve de material'], row['Texto breve de material']);
 
       tr.append(tdCentro, tdNombre, tdFecha, tdLote, tdRef, tdCant, tdMat);
@@ -730,39 +1078,66 @@ function renderTable(data) {
 
   requestAnimationFrame(paintChunk);
   updateRowCount(data.length);
+  updateTotalMetrics(data);
 }
 
-// -------------------- Filtros --------------------
+// -------------------- Filtros y Búsqueda Inteligente --------------------
 function applyFilters() {
-  const globalQ  = (document.getElementById('global-search')?.value || '').trim().toLowerCase();
-  const nombre   = document.getElementById('filter-nombre')?.value || '';
-  const fechaISO = document.getElementById('filter-fecha')?.value || '';
-  const material = document.getElementById('filter-material')?.value || '';
-  const loteQ    = (document.getElementById('filter-lote')?.value || '').trim().toUpperCase();
+  const rawGlobalQ = document.getElementById('global-search')?.value || '';
+  const centro     = document.getElementById('filter-centro')?.value || '';
+  const nombre     = document.getElementById('filter-nombre')?.value || '';
+  const fechaISO   = document.getElementById('filter-fecha')?.value || '';
+  const material   = document.getElementById('filter-material')?.value || '';
+  const rawLoteQ   = (document.getElementById('filter-lote')?.value || '').trim();
 
   // Controlar botón para limpiar búsqueda rápida
   const clearSearchBtn = document.getElementById('clear-search');
   if (clearSearchBtn) {
-    clearSearchBtn.style.display = globalQ ? 'block' : 'none';
+    clearSearchBtn.style.display = rawGlobalQ.trim() ? 'block' : 'none';
   }
 
-  let filtered = dataset;
+  let filtered = [...dataset];
 
-  // 1) Búsqueda Global (multi-término en todas las columnas)
-  if (globalQ) {
-    const terms = globalQ.split(/\s+/).filter(Boolean);
+  // 1) Búsqueda Global: multi-término, tolerante a tildes y a separadores numéricos (1,500 vs 1500 vs 1.500)
+  const normGlobalQ = normalizeSearchText(rawGlobalQ);
+  if (normGlobalQ) {
+    const rawTerms = rawGlobalQ.trim().split(/\s+/).filter(Boolean);
+    activeSearchTerms = rawTerms;
+    const terms = normGlobalQ.split(/\s+/).filter(Boolean);
+
     filtered = filtered.filter(r => {
       const corpus = r.__searchCorpus || '';
-      return terms.every(t => corpus.includes(t));
+      return terms.every(term => {
+        // Coincidencia directa en corpus
+        if (corpus.includes(term)) return true;
+
+        // Coincidencia eliminando separadores de miles/decimales (ej: usuario escribe 1,500 o 1.500)
+        const strippedTerm = term.replace(/[,\.]/g, '');
+        if (strippedTerm && corpus.includes(strippedTerm)) return true;
+
+        // Coincidencia eliminando ceros decimales (.00 o ,00)
+        const noZeroDec = term.replace(/\.00?$|,00?$/, '');
+        if (noZeroDec && corpus.includes(noZeroDec)) return true;
+        const noZeroDecStripped = noZeroDec.replace(/[,\.]/g, '');
+        if (noZeroDecStripped && corpus.includes(noZeroDecStripped)) return true;
+
+        return false;
+      });
     });
+  } else {
+    activeSearchTerms = [];
   }
 
   // 2) Filtros específicos por columna
+  if (centro) {
+    filtered = filtered.filter(r => String(r['Centro'] || '') === centro);
+  }
   if (nombre) {
     filtered = filtered.filter(r => (r['Nombre 1'] || '') === nombre);
   }
-  if (loteQ) {
-    filtered = filtered.filter(r => (r.__loteUC || '').includes(loteQ));
+  if (rawLoteQ) {
+    const loteNorm = normalizeSearchText(rawLoteQ).toUpperCase();
+    filtered = filtered.filter(r => (r.__loteUC || '').includes(loteNorm));
   }
   if (material) {
     filtered = filtered.filter(r => (r['Texto breve de material'] || '') === material);
@@ -771,7 +1146,29 @@ function applyFilters() {
     filtered = filtered.filter(r => r.__fechaISO === fechaISO);
   }
 
-  renderTable(filtered);
+  // 3) Ordenamiento por columna si está seleccionado
+  if (currentSortColumn) {
+    filtered.sort((a, b) => {
+      let cmp = 0;
+      if (currentSortColumn === 'Cantidad') {
+        const valA = a.__numericCantidad ?? -Infinity;
+        const valB = b.__numericCantidad ?? -Infinity;
+        cmp = valA - valB;
+      } else if (currentSortColumn === 'Fe.contabilización') {
+        const valA = a.__fechaISO || '';
+        const valB = b.__fechaISO || '';
+        cmp = valA.localeCompare(valB);
+      } else {
+        const valA = String(a[currentSortColumn] ?? '');
+        const valB = String(b[currentSortColumn] ?? '');
+        cmp = valA.localeCompare(valB, 'es', { numeric: true, sensitivity: 'base' });
+      }
+      return currentSortDirection === 'asc' ? cmp : -cmp;
+    });
+  }
+
+  currentFilteredData = filtered;
+  renderTable(filtered, activeSearchTerms);
 }
 
 function updateRowCount(count) {
@@ -1081,16 +1478,49 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 10) PWA: Registro de Service Worker para funcionamiento offline e instalación
+  // 10) Botón para limpiar caché y forzar actualización manual
+  const btnRefresh = document.getElementById('btn-refresh-data');
+  if (btnRefresh) {
+    btnRefresh.addEventListener('click', () => purgeAppCacheAndRefresh(true));
+  }
+
+  // Clic en el badge de origen para recargar rápidamente
+  const badgeSource = document.getElementById('data-source-badge');
+  if (badgeSource) {
+    badgeSource.addEventListener('click', () => purgeAppCacheAndRefresh(true));
+  }
+
+  // 11) Detección automática al reanudar la app en móviles / cambiar de pestaña
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      checkBackgroundUpdates();
+    }
+  });
+  window.addEventListener('focus', () => {
+    checkBackgroundUpdates();
+  });
+
+  // Comprobación periódica cada 3 minutos si la ventana se mantiene abierta
+  setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      checkBackgroundUpdates();
+    }
+  }, 180000);
+
+  // 12) PWA: Registro de Service Worker para funcionamiento offline e instalación
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js')
-        .then(reg => console.log('Service Worker PWA activo:', reg.scope))
+        .then(reg => {
+          console.log('Service Worker PWA activo:', reg.scope);
+          // Forzar comprobación de versión actualizada
+          reg.update();
+        })
         .catch(err => console.warn('Aviso PWA SW:', err));
     });
   }
 
-  // 11) PWA: Botón de instalación en pantalla de inicio
+  // 13) PWA: Botón de instalación en pantalla de inicio
   let deferredPrompt;
   const btnInstall = document.getElementById('btn-install-pwa');
 

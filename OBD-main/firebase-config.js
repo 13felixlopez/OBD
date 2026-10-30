@@ -261,10 +261,13 @@ async function loadFromFirebase() {
     }
   }
 
-  // 3) REST API Nativa de Firebase Realtime Database (HTTPS simple)
+  // 3) REST API Nativa de Firebase Realtime Database (HTTPS simple con bypass total de caché)
   try {
     const baseUrl = getNormalizedRtdbUrl(cfg.databaseURL);
-    const res = await fetch(`${baseUrl}/obd_data.json?t=${Date.now()}`);
+    const res = await fetch(`${baseUrl}/obd_data.json?t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache' }
+    });
     if (!res.ok) return null;
 
     const val = await res.json();
@@ -272,7 +275,10 @@ async function loadFromFirebase() {
 
     let meta = {};
     try {
-      const metaRes = await fetch(`${baseUrl}/obd_meta.json?t=${Date.now()}`);
+      const metaRes = await fetch(`${baseUrl}/obd_meta.json?t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache' }
+      });
       if (metaRes.ok) {
         meta = (await metaRes.json()) || {};
       }
@@ -290,6 +296,26 @@ async function loadFromFirebase() {
     console.warn('Error al leer desde REST API de Firebase:', err);
     return null;
   }
+}
+
+/**
+ * Consulta ultraligera de metadatos remotos (menos de 100 bytes)
+ * Permite verificar si existen datos más recientes sin descargar toda la base de datos.
+ */
+async function checkRemoteFirebaseMetadata() {
+  if (!isFirebaseConfigured()) return null;
+  const cfg = getActiveFirebaseConfig();
+  try {
+    const baseUrl = getNormalizedRtdbUrl(cfg.databaseURL);
+    const metaRes = await fetch(`${baseUrl}/obd_meta.json?t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache' }
+    });
+    if (metaRes.ok) {
+      return (await metaRes.json()) || null;
+    }
+  } catch (e) {}
+  return null;
 }
 
 /**
